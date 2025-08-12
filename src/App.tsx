@@ -212,4 +212,68 @@ export default function App(){
   async function initGapi(){ setDriveStatus("Loading Google client…"); await loadGapi(); const gapi=(window as any).gapi; await new Promise<void>((r)=>gapi.load("client:auth2", r)); await gapi.client.init({ apiKey: GOOGLE_DRIVE_CONFIG.API_KEY, clientId: GOOGLE_DRIVE_CONFIG.CLIENT_ID, discoveryDocs: GOOGLE_DRIVE_CONFIG.DISCOVERY_DOCS, scope: GOOGLE_DRIVE_CONFIG.SCOPES.join(" ") }); const auth=gapi.auth2.getAuthInstance(); setGoogleSignedIn(auth.isSignedIn.get()); auth.isSignedIn.listen((v:boolean)=>setGoogleSignedIn(v)); setGapiReady(true); setDriveStatus("") }
   async function googleSignIn(){ try{ if(!gapiReady) await initGapi(); const gapi=(window as any).gapi; await gapi.auth2.getAuthInstance().signIn(); setDriveStatus("Connected to Google Drive") } catch(e:any){ setDriveStatus(`Sign-in failed: ${e?.message||e}`) } }
   async function chooseDriveFolder(){ try{ setDriveStatus("Opening folder chooser…"); if(!gapiReady || !googleSignedIn) await googleSignIn(); const gapi=(window as any).gapi; const desired = prompt("Type a Drive folder name to use (or leave as 'Teacher Fairy Backups'):", driveFolderName || "Teacher Fairy Backups"); const name = (desired || "Teacher Fairy Backups").trim(); const list = await gapi.client.drive.files.list({ q: `mimeType='application/vnd.google-apps.folder' and name='${name.replace(/'/g, "\\'")}' and trashed=false`, fields: "files(id, name, modifiedTime)", orderBy: "modifiedTime desc", pageSize: 5 }); let folder = list.result.files?.[0]; if(!folder){ const createRes = await gapi.client.drive.files.create({ resource: { name, mimeType: 'application/vnd.google-apps.folder' }, }); folder = createRes.result; } if(folder?.id){ setDriveFolderId(folder.id); setDriveFolderName(folder.name); localStorage.setItem("tf.drive.folderId", folder.id); localStorage.setItem("tf.drive.folderName", folder.name||name); setDriveStatus(`Drive folder set: ${folder.name}`) } else { setDriveStatus("Could not set Drive folder") } } catch(e:any){ setDriveStatus(`Choose folder error: ${e?.message||e}`) } }
-  async function backupToDrive(){ try{ if(isDriveBacking) return; setIsDriveBacking(True:=False) }catch: ... }
+  async function backupToDrive() {
+  try {
+    if (isDriveBacking) return; // avoid overlapping backups
+    setIsDriveBacking(true);
+    setDriveStatus("Backing up to Drive…");
+
+    if (!gapiReady || !googleSignedIn) await googleSignIn();
+    const gapi = (window as any).gapi;
+
+    const project = JSON.parse(localStorage.getItem("teacher-fairy-project") || "{}");
+    const standards = JSON.parse(localStorage.getItem("tf.standardsDB") || "{}");
+    const payload = JSON.stringify(
+      { project, standardsDB: standards, ts: Date.now() },
+      null,
+      2
+    );
+
+    const metadata: any = {
+      name: GOOGLE_DRIVE_CONFIG.BACKUP_FILENAME,
+      mimeType: "application/json",
+      ...(driveFolderId ? { parents: [driveFolderId] } : {}),
+    };
+
+    const boundary = "-------314159265358979323846";
+    const delimiter = "\r\n--" + boundary + "\r\n";
+    const closeDelim = "\r\n--" + boundary + "--";
+    const multipartRequestBody =
+      delimiter +
+      "Content-Type: application/json; charset=UTF-8\r\n\r\n" +
+      JSON.stringify(metadata) +
+      "\r\n" +
+      delimiter +
+      "Content-Type: application/json\r\n\r\n" +
+      payload +
+      closeDelim;
+
+    const res = await gapi.client.request({
+      path: "/upload/drive/v3/files",
+      method: "POST",
+      params: { uploadType: "multipart" },
+      headers: { "Content-Type": "multipart/related; boundary=" + boundary },
+      body: multipartRequestBody,
+    });
+
+    if (res.status === 200 || res.status === 201) {
+      setDriveStatus("Backup saved to Drive ✔");
+      const now = Date.now();
+      setLastDriveBackupTs(now);
+      localStorage.setItem("tf.autoDrive.lastTs", String(now));
+      // if you track a countdown, you can reset it here
+    } else {
+      setDriveStatus("Drive backup completed (check Drive)");
+    }
+  } catch (e: any) {
+    setDriveStatus(`Drive backup error: ${e?.message || e}`);
+  } finally {
+    setIsDriveBacking(false);
+  }
+} return (
+    <div style={{padding: 24, fontFamily: 'Inter, system-ui, Arial, sans-serif'}}>
+      <h1>Teacher Fairy ✨</h1>
+      <p>If you see this, the app compiled successfully. We’ll restore the full UI next.</p>
+    </div>
+  );
+}
