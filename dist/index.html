@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Teacher Fairy ✨</title>
+    <link rel="icon" href="/favicon.ico" />
+    <style>
+      :root{
+        --bg:#f6f7fb; --card:#ffffff; --muted:#6b7280; --border:#e5e7eb; --ink:#111827;
+        --pill:#eef2ff; --pill-b:#c7d2fe;
+      }
+      *{ box-sizing: border-box; }
+      body{ margin:0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; background:var(--bg); color:var(--ink); }
+      .container{ max-width:1200px; margin:20px auto; padding:0 16px; }
+      .card{ background:var(--card); border:1px solid var(--border); border-radius:16px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+      .pad{ padding:16px; }
+      .grid{ display:grid; gap:12px; }
+      .row{ display:grid; grid-template-columns: repeat(12, 1fr); gap:12px; }
+      .col-2{ grid-column: span 2; } .col-3{ grid-column: span 3; } .col-4{ grid-column: span 4; } .col-5{ grid-column: span 5; } .col-6{ grid-column: span 6; } .col-8{ grid-column: span 8; } .col-12{ grid-column: span 12; }
+      .muted{ color: var(--muted); font-size:12px; }
+      .badge{ display:inline-flex; align-items:center; gap:6px; border:1px solid var(--border); border-radius:999px; padding:6px 10px; background:#fff; font-size:12px; cursor:pointer; }
+      .badge.on{ background:var(--pill); border-color:var(--pill-b); }
+      .stack{ display:flex; gap:8px; align-items:center; flex-wrap:wrap;}
+      .status{ font-size:12px; border:1px solid #c7e5ff; background:#ebf5ff; color:#0b64b1; padding:6px 10px; border-radius:8px; }
+      .status.ok{ background:#ecfdf5; border-color:#a7f3d0; color:#065f46;}
+      .status.err{ background:#fef2f2; border-color:#fecaca; color:#991b1b;}
+      .pill{ display:inline-flex; align-items:center; gap:6px; padding:6px 10px; border:1px solid var(--border); border-radius:999px; font-size:12px; background:#fff;}
+      pre{ white-space:pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background:#f3f4f6; padding:12px; border-radius:10px; border:1px solid var(--border); }
+      .btn.sm{ font-size:12px; padding:6px 10px; }
+    </style>
+    <script type="module" crossorigin src="/assets/index-CiJM_kH8.js"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>

@@ -1,833 +1,1046 @@
-// ---- Globals to keep TypeScript happy ----
-declare global {
-  interface Window {
-    gapi: any;
-    google: any;
-  }
-}
-import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Cloud, CloudDownload, CloudUpload, FileText, RefreshCw, Save, Trash2, Upload, Wand2, Settings2, CheckSquare } from 'lucide-react'
-import { Tabs, TabsList, TabsTrigger, TabsContent } from './components/ui/tabs'
-import { Card, CardContent, CardHeader, CardTitle } from './components/ui/card'
-import { Button } from './components/ui/button'
-import { Input } from './components/ui/input'
-import { Textarea } from './components/ui/textarea'
-import { Label } from './components/ui/label'
-import { Checkbox } from './components/ui/checkbox'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './components/ui/select'
-import { Badge } from './components/ui/badge'
-import { Separator } from './components/ui/separator'
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
-type Slot = { id:string; date:string; topic:string; files:File[]; images:File[]; notes:string; other:string; }
-type IncludeDaily = { date:boolean; topic:boolean; standards:boolean; objective:boolean; warmup:boolean; learningExperience:boolean; reflection:boolean; accommodations:boolean; otherIdeas:boolean; extensions:boolean; crossContent:boolean; misconceptions:boolean; materials:boolean; other:boolean; }
-type DailySections = Partial<Record<keyof IncludeDaily, string>>
-type UnitSections = { subject?:string; framework?:string; gradeBand?:string; standards?:string; essentialQuestions?:string[]; vocabulary?:string[]; mustKnow?:string[]; mustDo?:string[]; evidence?:string; assessments?:string; strategiesActivities?:string; crossContent?:string; misconceptions?:string; length?:string; progression?:string[]; diverseLearners?:string[]; materials?:string[]; other?:string; }
+type PlanType = "daily" | "weekly" | "unit";
 
-const defaultIncludeDaily: IncludeDaily = { date:true, topic:true, standards:true, objective:true, warmup:true, learningExperience:true, reflection:true, accommodations:true, otherIdeas:false, extensions:false, crossContent:true, misconceptions:true, materials:true, other:true }
-const FRAMEWORKS = ["Savvas: Connect / Investigate / Synthesize / Demonstrate","Bloom's Taxonomy","Fink's Taxonomy of Significant Learning","SOLO Taxonomy","Marzano's New Taxonomy","UbD (Backwards Design)","Gradual Release (I Do / We Do / You Do)","Inquiry Arc (NCSS)"]
-const SUBJECTS = ["Social Studies","Spanish","English Language Arts","Mathematics","Science","World Languages","Computer Science / Tech","Health & PE","Arts","CTE"]
-const OBJECTIVE_STYLES = ["I can…", "SWBAT…", "Students will…", "By the end, learners will…"]
-const MATERIALS = ["Curriculum","DBQ","Primary Sources","Textbook","Novel/Trade Book","Video","Lab/Activity Kit","Slide Deck","Worksheet","Project Brief","Rubric","Anchor Chart"]
-const STATES = ["Colorado"]
-const GRADE_BANDS = ["K-2","3-5","6-8","9-12"]
+type Uploaded = {
+  file: File;
+  text?: string;    // best-effort extracted text (txt/md/json/csv only in-browser)
+  name: string;
+  type: string;
+  size: number;
+};
 
-const SAMPLE_STANDARDS: Record<string,{code:string;text:string;tags:string[] }[]> = {
-  "Colorado|Social Studies|6-8": [
-    { code:"CO.SS.MS.1.1", text:"Analyze continuity and change over time in societies and regions.", tags:["continuity","change","historical","timeline"] },
-    { code:"CO.SS.MS.2.2", text:"Explain economic choices and trade-offs using real-world scenarios.", tags:["economics","trade","scarcity","choice"] },
-    { code:"CO.SS.MS.3.3", text:"Use geographic tools to gather data and make inferences about places.", tags:["geography","map","gis","place"] },
-    { code:"CO.SS.MS.4.1", text:"Describe civic responsibilities and processes for participation.", tags:["civics","rights","responsibility","participation"] },
-    { code:"CO.SS.MS.1.3", text:"Evaluate causes and effects of significant historical events.", tags:["cause","effect","revolution","war"] },
-  ],
-  "Colorado|World Languages|9-12": [
-    { code:"CO.WL.HS.1", text:"Interpretive communication in target language across authentic texts.", tags:["interpretive","reading","listening","authentic"] },
-    { code:"CO.WL.HS.2", text:"Interpersonal communication to exchange information and opinions.", tags:["interpersonal","speaking","conversation"] },
-    { code:"CO.WL.HS.3", text:"Presentational communication for audiences on familiar/unfamiliar topics.", tags:["presentational","speaking","writing"] },
-    { code:"CO.WL.HS.4", text:"Cultural competence: practices, products, perspectives.", tags:["culture","practices","products","perspectives"] },
-  ],
+function classNames(...xs: Array<string | false | null | undefined>) {
+  return xs.filter(Boolean).join(" ");
 }
 
-function slug(...parts:string[]){ return parts.join('|') }
-function toHTMLList(items: string[], title?: string) { if (!items.length) return ""; const head = title ? `<h4>${title}</h4>` : ""; return `${head}<ul>${items.map((i) => `<li>${i}</li>`).join("")}</ul>`; }
-function downloadAsDoc(filename: string, htmlBody: string) { const html = `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>${htmlBody}</body></html>`; const blob = new Blob([html], { type: "application/msword" }); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = filename.endsWith(".doc") ? filename : `${filename}.doc`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url); }
-function stripTags(html: string) { return html.replace(/<[^>]+>/g, ""); }
-function keywordsFromText(text:string){ return (text.toLowerCase().match(/[a-z]{4,}/g)||[]).slice(0,50) }
-function uniqWords(arr: string[]) { const words = arr.join(" ").toLowerCase().match(/[a-z]{4,}/g) || []; return Array.from(new Set(words)); }
-
-export default function App() {
-  const [state, setState] = useState("Colorado")
-  const [subject, setSubject] = useState("Social Studies")
-  const [gradeBand, setGradeBand] = useState("6-8")
-  const [framework, setFramework] = useState(FRAMEWORKS[0])
-  const [customTaxonomy, setCustomTaxonomy] = useState("")
-  const [objectiveStyle, setObjectiveStyle] = useState(OBJECTIVE_STYLES[0])
-  const [materials, setMaterials] = useState<string[]>(["Curriculum","DBQ"])
-  const [topicsOnly, setTopicsOnly] = useState(true)
-
-  const [slots, setSlots] = useState<Slot[]>([...Array(5)].map((_,i)=>({id:`slot-${i+1}`, date:"", topic:"", files:[], images:[], notes:"", other:""})))
-
-  // Standards
-  const [standardsSuggested, setStandardsSuggested] = useState<string[]>([])
-  const [standardsSelected, setStandardsSelected] = useState<string[]>([])
-  const [customStandard, setCustomStandard] = useState("")
-  const [standardsSearch, setStandardsSearch] = useState("")
-  const [standardsDB, setStandardsDB] = useState<Record<string,{ code: string; text: string; tags?: string[] }[]>>(()=>{
-    try { return JSON.parse(localStorage.getItem("tf.standardsDB")||"{}") } catch { return {} }
-  })
-  const [standardsCount, setStandardsCount] = useState<number>(()=>Object.values(standardsDB).reduce((a,b)=>a+(b?.length||0),0))
-  const importRef = useRef<HTMLInputElement>(null)
-
-  useEffect(()=>{ localStorage.setItem("tf.standardsDB", JSON.stringify(standardsDB)); setStandardsCount(Object.values(standardsDB).reduce((a,b)=>a+(b?.length||0),0)) }, [standardsDB])
-
-  // Locks
-  const [lockDaily, setLockDaily] = useState<Record<keyof IncludeDaily, boolean>>({ date:false, topic:false, standards:false, objective:false, warmup:false, learningExperience:false, reflection:false, accommodations:false, otherIdeas:false, extensions:false, crossContent:false, misconceptions:false, materials:false, other:false })
-  const [dailySections, setDailySections] = useState<DailySections>({})
-  const [lockUnit, setLockUnit] = useState<Record<string, boolean>>({})
-  const [unitSections, setUnitSections] = useState<UnitSections>({})
-
-  const [prefilledObjective, setPrefilledObjective] = useState("")
-  const [otherRequests, setOtherRequests] = useState("")
-
-  const [dailyPreview, setDailyPreview] = useState("")
-  const [weeklyPreview, setWeeklyPreview] = useState("")
-  const [unitPreview, setUnitPreview] = useState("")
-
-  // local persistence
-  useEffect(()=>{
-    const saved = localStorage.getItem("teacher-fairy-project"); if(saved){ try{ const data = JSON.parse(saved); setState(data.state||"Colorado"); setSubject(data.subject||"Social Studies"); setGradeBand(data.gradeBand||"6-8"); setFramework(data.framework||FRAMEWORKS[0]); setCustomTaxonomy(data.customTaxonomy||""); setObjectiveStyle(data.objectiveStyle||OBJECTIVE_STYLES[0]); setMaterials(data.materials||[]); setTopicsOnly(!!data.topicsOnly); setSlots(data.slots||[]); setStandardsSelected(data.standardsSelected||[]); setPrefilledObjective(data.prefilledObjective||""); setOtherRequests(data.otherRequests||""); }catch{} }
-  },[])
-  useEffect(()=>{
-    const data = { state, subject, gradeBand, framework, customTaxonomy, objectiveStyle, materials, topicsOnly, slots, standardsSelected, prefilledObjective, otherRequests }
-    localStorage.setItem("teacher-fairy-project", JSON.stringify(data))
-  }, [state, subject, gradeBand, framework, customTaxonomy, objectiveStyle, materials, topicsOnly, slots, standardsSelected, prefilledObjective, otherRequests])
-
-  function setSlotField(id:string, field:keyof Slot, value:any){
-    setSlots(prev=>prev.map(s=>s.id===id?{...s,[field]:value}:s))
-  }
-  function handleFiles(id:string, fileList: FileList|null){
-    if(!fileList) return
-    const docs: File[] = []; const images: File[] = []
-    Array.from(fileList).forEach(f=>{ if(f.type.startsWith("image/")) images.push(f); else docs.push(f) })
-    setSlots(prev=>prev.map(s=>s.id===id?{...s, files:[...s.files, ...docs], images:[...s.images, ...images]}:s))
-  }
-  function removeFile(id:string, idx:number, isImage=false){
-    setSlots(prev=>prev.map(s=>{
-      if(s.id!==id) return s
-      if(isImage){ const images=s.images.slice(); images.splice(idx,1); return {...s, images} }
-      const files=s.files.slice(); files.splice(idx,1); return {...s, files}
-    }))
-  }
-  function toggleMaterial(tag:string){ setMaterials(prev=>prev.includes(tag)?prev.filter(t=>t!==tag):[...prev, tag]) }
-
-  function suggestStandards(){
-    const key = slug(state, subject==="Spanish"?"World Languages":subject, gradeBand)
-    const pool = standardsDB[key] || SAMPLE_STANDARDS[key] || []
-    const topicText = slots.map(s=>`${s.topic}\n${s.notes}`).join("\n\n")
-    const keys = new Set([...keywordsFromText(topicText), ...keywordsFromText(standardsSearch)])
-    const hits:string[] = []
-    pool.forEach(st=>{
-      if(!standardsSearch.trim() || st.text.toLowerCase().includes(standardsSearch.toLowerCase()) || (st.tags||[]).some(t=>keys.has(t))){
-        hits.push(`${st.code} — ${st.text}`)
-      }
-    })
-    setStandardsSuggested(hits.length?hits:pool.slice(0,12).map(s=>`${s.code} — ${s.text}`))
-  }
-  function addStandard(std:string){ setStandardsSelected(prev=>prev.includes(std)?prev:[...prev,std]) }
-  function removeStandard(std:string){ setStandardsSelected(prev=>prev.filter(s=>s!==std)) }
-  function addCustomStandard(){ if(!customStandard.trim()) return; addStandard(customStandard.trim()); setCustomStandard("") }
-  function handleImport(e: React.ChangeEvent<HTMLInputElement>){
-    const file = e.target.files?.[0]; if(!file) return
-    const reader = new FileReader(); reader.onload = () => {
-      try{
-        const data = JSON.parse(String(reader.result)||"{}")
-        let db: Record<string,{code:string;text:string;tags?:string[]}[]> = {}
-        if(Array.isArray(data)){ data.forEach((row:any)=>{ const key = `${row.state||"Colorado"}|${row.subject}|${row.gradeBand}`; (db[key]||(db[key]=[])).push({code:row.code, text:row.text, tags:row.tags||[]}) }) }
-        else db = data
-        setStandardsDB(db)
-      }catch{ alert("Could not read standards JSON.") }
-    }
-    reader.readAsText(file)
-  }
-  function exportStandards(){
-    try{ const data = JSON.stringify(standardsDB||{}, null, 2); const blob = new Blob([data], {type:"application/json"}); const url = URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download="colorado_standards.json"; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url) }catch{ alert("Nothing to export.") }
-  }
-
-  function assembleDailyFrom(slot: Slot){
-    const selectedTaxonomy = customTaxonomy.trim()?customTaxonomy:framework
-    const parts:string[] = []
-    if(defaultIncludeDaily.date) parts.push(`Date: ${slot.date || "TBD"}`)
-    if(defaultIncludeDaily.topic) parts.push(`Topic: ${slot.topic || "TBD"}`)
-    if(defaultIncludeDaily.standards) parts.push(`Standards: ${standardsSelected.join("; ") || "[auto]"}`)
-    if(defaultIncludeDaily.objective) parts.push(`Objective (${objectiveStyle}): ${prefilledObjective || "Students will be able to describe and explain the topic."}`)
-    if(defaultIncludeDaily.warmup) parts.push(`Warm-up: Quick write / prior knowledge activation.`)
-    if(defaultIncludeDaily.learningExperience) parts.push(`Learning Experience (${selectedTaxonomy}): Mini-lesson → guided practice → collaborative task.`)
-    if(defaultIncludeDaily.reflection) parts.push(`Exit Ticket: 2-3 sentence summary or problem.`)
-    if(defaultIncludeDaily.accommodations) parts.push(`Accommodations: Sentence frames, visuals, extended time.`)
-    if(defaultIncludeDaily.crossContent) parts.push(`Cross-Content Link: Writing / quantitative reasoning.`)
-    if(defaultIncludeDaily.misconceptions) parts.push(`Common Misconceptions: Overgeneralization of causes/effects.`)
-    if(defaultIncludeDaily.materials) parts.push(`Materials: ${materials.join(", ")}`)
-    if(defaultIncludeDaily.other) parts.push(`Other: ${slot.other}`)
-    return `<h3>Daily Plan</h3>${parts.map(p=>`<p>${p}</p>`).join("")}`
-  }
-
-  function generateDaily(){ const base = slots.find(s=>s.topic||s.date) || slots[0]; setDailyPreview(stripTags(assembleDailyFrom(base))) }
-  function generateWeekly(){
-    const days = slots.filter(s=>s.topic||s.date)
-    const topics = days.map((d,i)=>`${d.date || `Day ${i+1}`}: ${d.topic || "TBD"}`)
-    const checks = days.map((_,i)=>`Day ${i+1}: exit ticket or CFU`)
-    const html = [`<h3>Weekly Plan</h3>`,`<p><b>Standards:</b> ${standardsSelected.join("; ") || "[mapped]"}</p>`,toHTMLList(topics,"Topics by Day"), toHTMLList(checks,"Checks for Understanding"), `<p><b>Materials:</b> ${materials.join(", ")}</p>`].join("")
-    setWeeklyPreview(stripTags(html))
-  }
-  function generateUnit(){
-    const selectedTaxonomy = customTaxonomy.trim()?customTaxonomy:framework
-    const allTopics = slots.map(s=>s.topic).filter(Boolean)
-    const html = [`<h3>Unit Plan</h3>`,`<p><b>Subject:</b> ${subject} | <b>Framework:</b> ${selectedTaxonomy} | <b>Grade Band:</b> ${gradeBand}</p>`,`<p><b>Standards:</b> ${standardsSelected.join("; ") || "[select or auto]"}</p>`, toHTMLList(["How does evidence support claims?","Why do systems change?","What do responsible citizens do?"],"Essential Questions"), toHTMLList(uniqWords(allTopics).slice(0,12), "Vocabulary"), toHTMLList(["Key concepts and facts for mastery"], "Must Know"), toHTMLList(["Skills: analyze, compare, argue from evidence"], "Must Do"), `<p><b>Evidence of Learning:</b> diagnostic check, weekly CFUs, performance task, rubric</p>`, `<p><b>Assessments:</b> diagnostic / formative / summative</p>`, `<p><b>Strategies & Activities:</b> ${selectedTaxonomy}; stations, inquiry, projects; activities sourced from uploads/topics</p>`, `<p><b>Cross-Content Links:</b> ELA writing, quantitative reasoning, media literacy</p>`, `<p><b>Common Misconceptions:</b> definition drift, timeline confusion, overgeneralization</p>`, `<p><b>Length of Time:</b> ${Math.max(5, allTopics.length)}–${Math.max(7, allTopics.length + 2)} class periods</p>`, toHTMLList(["Connect prior knowledge","Introduce new concept/content","Practice & deepen","Apply","Extend"], "Learning Progression"), toHTMLList(["UDL choices","Graphic organizers","Language scaffolds","Small-group instruction","Flexible deadlines"], "Strategies for Diverse Learners"), `<p><b>Materials/Resources:</b> ${materials.join(", ")}</p>`, otherRequests ? `<p><b>Other:</b> ${otherRequests}</p>` : ""].join("")
-    setUnitPreview(stripTags(html))
-  }
-
-  function downloadDoc(label:string, content:string){ downloadAsDoc(label, `<pre>${content}</pre>`) }
-
-  const selectedTaxonomy = useMemo(()=> (customTaxonomy.trim()?customTaxonomy:framework), [framework, customTaxonomy])
-
-  // Google Drive scaffolding
-  const GOOGLE_DRIVE_CONFIG = {
-    API_KEY: "YOUR_GOOGLE_API_KEY_HERE",
-    CLIENT_ID: "YOUR_OAUTH_CLIENT_ID.apps.googleusercontent.com",
-    SCOPES: ["https://www.googleapis.com/auth/drive.file"],
-    DISCOVERY_DOCS: ["https://www.googleapis.com/discovery/v1/apis/drive/v3/rest"],
-    BACKUP_FILENAME: "teacher_fairy_backup_all.json",
-  }
-  const [gapiReady, setGapiReady] = useState(false)
-  const [googleSignedIn, setGoogleSignedIn] = useState(false)
-  const [driveStatus, setDriveStatus] = useState<string>("")
-  const [driveFolderId, setDriveFolderId] = useState<string>(()=>localStorage.getItem("tf.drive.folderId")||"")
-  const [driveFolderName, setDriveFolderName] = useState<string>(()=>localStorage.getItem("tf.drive.folderName")||"")
-  const [autoDriveBackup, setAutoDriveBackup] = useState<boolean>(()=>{
-    try { return JSON.parse(localStorage.getItem("tf.autoDrive.enabled")||"false") } catch { return false }
-  })
-  const [autoDriveMinutes, setAutoDriveMinutes] = useState<number>(()=>{
-    const v = parseInt(localStorage.getItem("tf.autoDrive.minutes")||"3",10); return isNaN(v)?3:Math.min(Math.max(v,2),120)
-  })
-  const [isDriveBacking, setIsDriveBacking] = useState(false)
-  const [lastDriveBackupTs, setLastDriveBackupTs] = useState<number>(()=>{
-    const v = parseInt(localStorage.getItem("tf.autoDrive.lastTs")||"0",10); return isNaN(v)?0:v
-  })
-  const [nextBackupMs, setNextBackupMs] = useState<number>(0)
-  const [driveFlash, setDriveFlash] = useState<""|"success"|"error">("")
-
-  async function loadGapi(){ if((window as any).gapi) return true; await new Promise<void>((resolve,reject)=>{ const s=document.createElement('script'); s.src='https://apis.google.com/js/api.js'; s.onload=()=>resolve(); s.onerror=()=>reject(new Error('Failed to load Google API')); document.body.appendChild(s) }); return true }
-  async function initGapi(){ setDriveStatus("Loading Google client…"); await loadGapi(); const gapi=(window as any).gapi; await new Promise<void>((r)=>gapi.load("client:auth2", r)); await gapi.client.init({ apiKey: GOOGLE_DRIVE_CONFIG.API_KEY, clientId: GOOGLE_DRIVE_CONFIG.CLIENT_ID, discoveryDocs: GOOGLE_DRIVE_CONFIG.DISCOVERY_DOCS, scope: GOOGLE_DRIVE_CONFIG.SCOPES.join(" ") }); const auth=gapi.auth2.getAuthInstance(); setGoogleSignedIn(auth.isSignedIn.get()); auth.isSignedIn.listen((v:boolean)=>setGoogleSignedIn(v)); setGapiReady(true); setDriveStatus("") }
-  async function googleSignIn(){ try{ if(!gapiReady) await initGapi(); const gapi=(window as any).gapi; await gapi.auth2.getAuthInstance().signIn(); setDriveStatus("Connected to Google Drive") } catch(e:any){ setDriveStatus(`Sign-in failed: ${e?.message||e}`) } }
-  async function chooseDriveFolder(){ try{ setDriveStatus("Opening folder chooser…"); if(!gapiReady || !googleSignedIn) await googleSignIn(); const gapi=(window as any).gapi; const desired = prompt("Type a Drive folder name to use (or leave as 'Teacher Fairy Backups'):", driveFolderName || "Teacher Fairy Backups"); const name = (desired || "Teacher Fairy Backups").trim(); const list = await gapi.client.drive.files.list({ q: `mimeType='application/vnd.google-apps.folder' and name='${name.replace(/'/g, "\\'")}' and trashed=false`, fields: "files(id, name, modifiedTime)", orderBy: "modifiedTime desc", pageSize: 5 }); let folder = list.result.files?.[0]; if(!folder){ const createRes = await gapi.client.drive.files.create({ resource: { name, mimeType: 'application/vnd.google-apps.folder' }, }); folder = createRes.result; } if(folder?.id){ setDriveFolderId(folder.id); setDriveFolderName(folder.name); localStorage.setItem("tf.drive.folderId", folder.id); localStorage.setItem("tf.drive.folderName", folder.name||name); setDriveStatus(`Drive folder set: ${folder.name}`) } else { setDriveStatus("Could not set Drive folder") } } catch(e:any){ setDriveStatus(`Choose folder error: ${e?.message||e}`) } }
-  async function backupToDrive() {
+async function readFileBestEffort(file: File): Promise<string | undefined> {
+  const name = file.name.toLowerCase();
+  const isPlainish =
+    name.endsWith(".txt") ||
+    name.endsWith(".md") ||
+    name.endsWith(".csv") ||
+    name.endsWith(".json") ||
+    name.endsWith(".html");
+  if (!isPlainish) return undefined;
   try {
-    if (isDriveBacking) return; // avoid overlapping backups
-    setIsDriveBacking(true);
-    setDriveStatus("Backing up to Drive…");
-
-    if (!gapiReady || !googleSignedIn) await googleSignIn();
-    const gapi = (window as any).gapi;
-
-    const project = JSON.parse(localStorage.getItem("teacher-fairy-project") || "{}");
-    const standards = JSON.parse(localStorage.getItem("tf.standardsDB") || "{}");
-    const payload = JSON.stringify(
-      { project, standardsDB: standards, ts: Date.now() },
-      null,
-      2
-    );
-
-    const metadata: any = {
-      name: GOOGLE_DRIVE_CONFIG.BACKUP_FILENAME,
-      mimeType: "application/json",
-      ...(driveFolderId ? { parents: [driveFolderId] } : {}),
-    };
-
-    const boundary = "-------314159265358979323846";
-    const delimiter = "\r\n--" + boundary + "\r\n";
-    const closeDelim = "\r\n--" + boundary + "--";
-    const multipartRequestBody =
-      delimiter +
-      "Content-Type: application/json; charset=UTF-8\r\n\r\n" +
-      JSON.stringify(metadata) +
-      "\r\n" +
-      delimiter +
-      "Content-Type: application/json\r\n\r\n" +
-      payload +
-      closeDelim;
-
-    const res = await gapi.client.request({
-      path: "/upload/drive/v3/files",
-      method: "POST",
-      params: { uploadType: "multipart" },
-      headers: { "Content-Type": "multipart/related; boundary=" + boundary },
-      body: multipartRequestBody,
-    });
-
-    if (res.status === 200 || res.status === 201) {
-      setDriveStatus("Backup saved to Drive ✔");
-      const now = Date.now();
-      setLastDriveBackupTs(now);
-      localStorage.setItem("tf.autoDrive.lastTs", String(now));
-      // if you track a countdown, you can reset it here
-    } else {
-      setDriveStatus("Drive backup completed (check Drive)");
-    }
-   } catch (e: any) {
-    setDriveStatus(`Drive backup error: ${e?.message || e}`);
-  } finally {
-    setIsDriveBacking(false);
-  }
-} // ← end of backupToDrive()
-
-// Restore the most recent backup file from Google Drive
-async function restoreLatestFromDrive() {
-  try {
-    setDriveStatus("Looking for backups in Drive…");
-
-    // Ensure Drive client is loaded and user is signed in
-    if (!gapiReady || !googleSignedIn) await googleSignIn();
-    const gapi = (window as any).gapi;
-
-    // Query newest backup file (optionally within chosen folder)
-    const fname = GOOGLE_DRIVE_CONFIG.BACKUP_FILENAME.replace(/'/g, "\\'");
-    let q = `name='${fname}' and trashed=false`;
-    if (driveFolderId) q += ` and '${driveFolderId}' in parents`;
-
-    const listRes = await gapi.client.drive.files.list({
-      q,
-      fields: "files(id,name,modifiedTime)",
-      orderBy: "modifiedTime desc",
-      pageSize: 1,
-    });
-
-    const file = listRes.result?.files?.[0];
-    if (!file) {
-      setDriveStatus("No backup file found in Drive.");
-      return;
-    }
-
-    // Download JSON content
-    const getRes = await gapi.client.drive.files.get({
-      fileId: file.id,
-      alt: "media",
-    });
-
-    const data: any = (getRes as any).result || {};
-    const project = data.project || {};
-    const standards = data.standardsDB || {};
-
-    // Persist locally
-    localStorage.setItem("teacher-fairy-project", JSON.stringify(project));
-    localStorage.setItem("tf.standardsDB", JSON.stringify(standards));
-
-    // Update UI state
-    setState(project.state || "Colorado");
-    setSubject(project.subject || "Social Studies");
-    setGradeBand(project.gradeBand || "6-8");
-    setFramework(project.framework || FRAMEWORKS[0]);
-    setCustomTaxonomy(project.customTaxonomy || "");
-    setObjectiveStyle(project.objectiveStyle || OBJECTIVE_STYLES[0]);
-    setMaterials(project.materials || []);
-    setTopicsOnly(!!project.topicsOnly);
-    setSlots(project.slots || []);
-    setStandardsSelected(project.standardsSelected || []);
-    setPrefilledObjective(project.prefilledObjective || "");
-    setOtherRequests(project.otherRequests || "");
-    setStandardsDB(standards);
-
-    setDriveStatus(`Restored from Drive (${file.name}) ✔`);
-  } catch (e: any) {
-    setDriveStatus(`Restore error: ${e?.message || e}`);
+    return await file.text();
+  } catch {
+    return undefined;
   }
 }
 
-return (
-  <div style={{ fontFamily: 'Inter, system-ui, Arial, sans-serif', background:'#f6f7fb', minHeight:'100vh' }}>
-    <div style={{ maxWidth: 1200, margin: '20px auto', padding: '0 16px' }}>
-      {/* HEADER */}
-      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12 }}>
-        <div>
-          <h1 style={{ margin:0 }}>Teacher Fairy ✨</h1>
-          <div style={{ color:'#6b7280', fontSize:12 }}>Plan generator with Drive backup & standards</div>
-        </div>
-        <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
-          <button onClick={googleSignIn}>Connect Drive</button>
-          <button onClick={chooseDriveFolder}>Choose Drive Folder</button>
-          <button onClick={backupToDrive} disabled={isDriveBacking}>{isDriveBacking ? 'Backing up…' : 'Backup to Drive'}</button>
-          <button onClick={restoreLatestFromDrive}>Restore from Drive</button>
-          {driveFolderName && <span style={{fontSize:12, color:'#6b7280'}}>Folder: {driveFolderName}</span>}
-        </div>
-      </div>
-{/* STATUS STRIP */}
-{driveStatus ? (
-  <div style={{
-    fontSize:12,
-    border:'1px solid #c7e5ff',
-    background:'#ebf5ff',
-    color:'#0b64b1',
-    padding:'6px 10px',
-    borderRadius:8,
-    marginBottom:12
-  }}>{driveStatus}</div>
-) : null}
+function toDropdown<T extends string>(items: T[]) {
+  return items.map(v => ({ label: v[0].toUpperCase() + v.slice(1), value: v }));
+}
 
-{/* DRIVE BUTTONS */}
-<div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap', marginBottom:12 }}>
-  <button onClick={googleSignIn}>Connect Drive</button>
-  <button onClick={chooseDriveFolder}>Choose Drive Folder</button>
-  <button onClick={backupToDrive} disabled={isDriveBacking}>
-    {isDriveBacking ? 'Backing up…' : 'Backup to Drive'}
-  </button>
-  <button onClick={restoreLatestFromDrive}>Restore from Drive</button>
-  {driveFolderName && (
-    <span style={{fontSize:12, color:'#6b7280'}}>Folder: {driveFolderName}</span>
-  )}
-</div>
-{/* AUTO DRIVE BACKUP CONTROLS */}
-<div style={{
-  background:'#fff', border:'1px solid #e5e7eb', borderRadius:12, padding:12, marginBottom:12,
-  display:'flex', alignItems:'center', gap:10, flexWrap:'wrap'
-}}>
-  <label style={{ display:'flex', alignItems:'center', gap:6 }}>
-    <input
-      type="checkbox"
-      checked={autoDriveBackup}
-      onChange={() => setAutoDriveBackup(!autoDriveBackup)}
-    />
-    Auto-backup to Drive every
-  </label>
-  <input
-    type="number"
-    value={autoDriveMinutes}
-    onChange={(e)=>setAutoDriveMinutes(Math.min(Math.max(parseInt(e.target.value||'3',10)||3,2),120))}
-    style={{ width:60 }}
-  />
-  <span>min</span>
-  <button onClick={backupToDrive} disabled={isDriveBacking}>Backup Now</button>
-  <span style={{ marginLeft:8, fontSize:12 }}>Last backup: {lastDriveBackupTs ? new Date(lastDriveBackupTs).toLocaleTimeString() : '—'}</span>
-  <span
-    style={{
-      marginLeft:8,
-      fontSize:12,
-      color: (nextBackupMs>0 && nextBackupMs<=10000) ? '#dc2626' : 'inherit',
-      fontWeight: (nextBackupMs>0 && nextBackupMs<=10000) ? 600 : 400
-    }}
-  >
-    Next backup in: {nextBackupMs>0
-      ? `${String(Math.floor(nextBackupMs/60000)).padStart(2,'0')}:${String(Math.floor((nextBackupMs%60000)/1000)).padStart(2,'0')}`
-      : '—'}
-  </span>
-</div>
-{/* SETTINGS BAR */}
-<div style={{ background:'#fff', border:'1px solid #e5e7eb', borderRadius:12, padding:12, marginBottom:12 }}>
-  <div style={{ display:'grid', gridTemplateColumns:'repeat(12,1fr)', gap:12 }}>
-    <div style={{ gridColumn:'span 3' }}>
-      <label style={{fontWeight:600, fontSize:12, color:'#4b5563'}}>State</label>
-      <select value={state} onChange={e=>setState(e.target.value)} style={{ width:'100%' }}>
-        {STATES.map(s=><option key={s} value={s}>{s}</option>)}
-      </select>
-    </div>
-    <div style={{ gridColumn:'span 3' }}>
-      <label style={{fontWeight:600, fontSize:12, color:'#4b5563'}}>Subject</label>
-      <select value={subject} onChange={e=>setSubject(e.target.value)} style={{ width:'100%' }}>
-        {SUBJECTS.map(s=><option key={s} value={s}>{s}</option>)}
-      </select>
-    </div>
-    <div style={{ gridColumn:'span 3' }}>
-      <label style={{fontWeight:600, fontSize:12, color:'#4b5563'}}>Grade Band</label>
-      <select value={gradeBand} onChange={e=>setGradeBand(e.target.value)} style={{ width:'100%' }}>
-        {GRADE_BANDS.map(g=><option key={g} value={g}>{g}</option>)}
-      </select>
-    </div>
-    <div style={{ gridColumn:'span 3' }}>
-      <label style={{fontWeight:600, fontSize:12, color:'#4b5563'}}>Objective Style</label>
-      <select value={objectiveStyle} onChange={e=>setObjectiveStyle(e.target.value)} style={{ width:'100%' }}>
-        {OBJECTIVE_STYLES.map(o=><option key={o} value={o}>{o}</option>)}
-      </select>
-    </div>
-    <div style={{ gridColumn:'span 6' }}>
-      <label style={{fontWeight:600, fontSize:12, color:'#4b5563'}}>Framework / Taxonomy</label>
-      <div style={{ display:'flex', gap:8 }}>
-        <select value={framework} onChange={e=>setFramework(e.target.value)} style={{ width:'50%' }}>
-          {FRAMEWORKS.map(f=><option key={f} value={f}>{f}</option>)}
-        </select>
-        <input
-          placeholder="Custom taxonomy (optional)"
-          value={customTaxonomy}
-          onChange={e=>setCustomTaxonomy(e.target.value)}
-          style={{ flex:1 }}
-        />
-      </div>
-    </div>
-    <div style={{ gridColumn:'span 6' }}>
-      <label style={{fontWeight:600, fontSize:12, color:'#4b5563'}}>Materials & Resources</label>
-      <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
-        {MATERIALS.map(m=>(
-          <button key={m} onClick={()=>toggleMaterial(m)} style={{
-            border:'1px solid #d6dbe3', borderRadius:999, padding:'6px 10px', background: materials.includes(m) ? '#eef2ff' : '#fff'
-          }}>
-            {materials.includes(m) ? '✓ ' : ''}{m}
-          </button>
-        ))}
-      </div>
-    </div>
-    <div style={{ gridColumn:'span 12', display:'flex', alignItems:'center', gap:8 }}>
-      <input id="topicsOnly" type="checkbox" checked={topicsOnly} onChange={()=>setTopicsOnly(!topicsOnly)} />
-      <label htmlFor="topicsOnly">Generate from topics only (files optional)</label>
-    </div>
-  </div>
-</div>
+function downloadHTMLAsDoc(filename: string, html: string) {
+  const blob = new Blob(
+    [
+      `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+        body{font-family:ui-sans-serif,system-ui,Segoe UI,Roboto,Helvetica,Arial,Apple Color Emoji,Segoe UI Emoji;line-height:1.4}
+        table{border-collapse:collapse;width:100%;margin:8px 0}
+        th,td{border:1px solid #e5e7eb;padding:6px;vertical-align:top}
+        h1,h2,h3{margin:8px 0}
+        .small{font-size:.9rem;color:#374151}
+      </style></head><body>${html}</body></html>`,
+    ],
+    { type: "application/msword" }
+  );
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename.endsWith(".doc") ? filename : filename + ".doc";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
 
-{/* UPLOAD SLOTS */}
-<div style={{ background:'#fff', border:'1px solid #e5e7eb', borderRadius:12, padding:12, marginBottom:12 }}>
-  <h3 style={{ marginTop:0 }}>Upload Slots</h3>
-  <div style={{ display:'grid', gap:12 }}>
-    {slots.map((slot, idx)=>(
-      <div key={slot.id} style={{ background:'#fff', border:'1px solid #e5e7eb', borderRadius:12, padding:12 }}>
-        <div style={{ display:'grid', gridTemplateColumns:'repeat(12,1fr)', gap:12 }}>
-          <div style={{ gridColumn:'span 3' }}>
-            <label style={{fontWeight:600, fontSize:12, color:'#4b5563'}}>Date</label>
-            <input type="date" value={slot.date} onChange={e=>setSlotField(slot.id,'date', e.target.value)} />
-          </div>
-          <div style={{ gridColumn:'span 5' }}>
-            <label style={{fontWeight:600, fontSize:12, color:'#4b5563'}}>Topic</label>
-            <input placeholder="e.g., Causes of the American Revolution" value={slot.topic} onChange={e=>setSlotField(slot.id,'topic', e.target.value)} />
-          </div>
-          <div style={{ gridColumn:'span 4' }}>
-            <label style={{fontWeight:600, fontSize:12, color:'#4b5563'}}>Attach Files / Pictures</label>
-            <input type="file" multiple onChange={e=>handleFiles(slot.id, e.target.files)} />
-            <div style={{ display:'flex', flexWrap:'wrap', gap:6, marginTop:6 }}>
-              {slot.files.map((f,i)=>(
-                <span key={i} style={{ border:'1px solid #d6dbe3', borderRadius:999, padding:'4px 8px', fontSize:12 }}>
-                  {f.name} <button onClick={()=>removeFile(slot.id,i,false)} style={{ marginLeft:6 }}>✕</button>
-                </span>
-              ))}
-              {slot.images.map((f,i)=>(
-                <span key={'img'+i} style={{ border:'1px solid #d6dbe3', borderRadius:999, padding:'4px 8px', fontSize:12 }}>
-                  {f.name} <button onClick={()=>removeFile(slot.id,i,true)} style={{ marginLeft:6 }}>✕</button>
-                </span>
-              ))}
-            </div>
-          </div>
-          <div style={{ gridColumn:'span 12' }}>
-            <label style={{fontWeight:600, fontSize:12, color:'#4b5563'}}>Pasted text snippet (optional)</label>
-            <textarea value={slot.notes} onChange={e=>setSlotField(slot.id,'notes', e.target.value)} style={{ width:'100%', minHeight:90 }} />
-          </div>
-        </div>
-      </div>
-    ))}
-  </div>
-  <div style={{ display:'flex', gap:8, marginTop:8 }}>
-    <button onClick={()=>setSlots(prev=>[...prev,{id:`slot-${prev.length+1}`, date:'', topic:'', files:[], images:[], notes:'', other:''}])}>+ Add Slot</button>
-    <button onClick={()=>setSlots([{id:'slot-1', date:'', topic:'', files:[], images:[], notes:'', other:''}])}>Clear Slots</button>
-  </div>
-</div>
+async function copyHtmlToClipboard(html: string){
+  try {
+    await navigator.clipboard.writeText(html);
+    alert("HTML copied! Paste into Google Docs (Insert → Drawing → New → then paste, or simply paste into the doc).");
+  } catch (e) {
+    alert("Could not copy to clipboard. Select and copy from the Preview instead.");
+  }
+}
 
-{/* STANDARDS & OPTIONS */}
-<div style={{ background:'#fff', border:'1px solid #e5e7eb', borderRadius:12, padding:12, marginBottom:12 }}>
-  <h3 style={{ marginTop:0 }}>Standards & Options</h3>
-  <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
-    <input
-      placeholder="Search standards (keyword/code)"
-      value={standardsSearch}
-      onChange={e=>setStandardsSearch(e.target.value)}
-      style={{ flex:1, minWidth:240 }}
-    />
-    <button onClick={suggestStandards}>Suggest from topics/search</button>
-    <button onClick={()=>setStandardsSelected([])}>Clear selected</button>
-    <button onClick={()=>importRef.current?.click()}>Import CO Standards (.json)</button>
-    <button onClick={exportStandards}>Export Standards (.json)</button>
-    <input ref={importRef} type="file" accept="application/json" style={{ display:'none' }} onChange={handleImport} />
-    <span style={{ marginLeft:'auto', color:'#6b7280', fontSize:12 }}>
-      {standardsCount ? `${standardsCount} standards loaded` : 'using sample set'}
-    </span>
-  </div>
-  <div style={{ height:1, background:'#e5e7eb', margin:'10px 0' }} />
-  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+function Label({ children, htmlFor }: { children: React.ReactNode; htmlFor?: string }) {
+  return <label htmlFor={htmlFor} className="block text-sm font-medium text-gray-800 mb-1">{children}</label>;
+}
+
+function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
+  return <input {...props} className={classNames(
+    "w-full rounded-lg border border-gray-300 px-3 py-2 text-sm",
+    "focus:outline-none focus:ring-2 focus:ring-indigo-500",
+    props.className || ""
+  )}/>;
+}
+
+function Textarea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
+  return <textarea {...props} className={classNames(
+    "w-full rounded-lg border border-gray-300 px-3 py-2 text-sm min-h-[96px]",
+    "focus:outline-none focus:ring-2 focus:ring-indigo-500",
+    props.className || ""
+  )}/>;
+}
+
+function Select({ value, onChange, options, placeholder } : {
+  value?: string;
+  onChange?: (v: string) => void;
+  options: {label: string; value: string}[];
+  placeholder?: string;
+}) {
+  return (
+    <select
+      value={value || ""}
+      onChange={e => onChange?.(e.target.value)}
+      className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
+    >
+      <option value="">{placeholder || "Choose..."}</option>
+      {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+    </select>
+  );
+}
+
+function Checkbox({ label, checked, onChange }: { label: string; checked?: boolean; onChange?: (v:boolean)=>void }) {
+  return (
+    <label className="flex items-center gap-2 text-sm">
+      <input type="checkbox" checked={!!checked} onChange={e=>onChange?.(e.target.checked)} className="h-4 w-4"/>
+      <span>{label}</span>
+    </label>
+  );
+}
+
+function MultiTagInput({ value, onChange, placeholder }: {
+  value: string[];
+  onChange: (xs: string[]) => void;
+  placeholder?: string;
+}) {
+  const [draft, setDraft] = useState("");
+  function add() {
+    const v = draft.trim();
+    if (!v) return;
+    if (!value.includes(v)) onChange([...value, v]);
+    setDraft("");
+  }
+  return (
     <div>
-      <label style={{fontWeight:600, fontSize:12, color:'#4b5563'}}>Suggestions</label>
-      <div>
-        {standardsSuggested.map(s=>(
-          <div key={s} style={{ margin:'6px 0' }}>
-            <button onClick={()=>addStandard(s)} style={{ marginRight:6 }}>Add</button>
-            <span style={{ color:'#6b7280' }}>{s}</span>
-          </div>
-        ))}
+      <div className="flex gap-2">
+        <Input value={draft} onChange={e=>setDraft(e.target.value)} placeholder={placeholder||"Type and enter"} onKeyDown={(e)=>{ if(e.key==="Enter"){ e.preventDefault(); add(); }}} />
+        <button onClick={add} className="rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-sm px-3 py-2">Add</button>
       </div>
-    </div>
-    <div>
-      <label style={{fontWeight:600, fontSize:12, color:'#4b5563'}}>Selected</label>
-      <div>
-        {standardsSelected.map(s=>(
-          <div key={s} style={{ margin:'6px 0' }}>
-            <button onClick={()=>removeStandard(s)} style={{ marginRight:6 }}>Remove</button>
-            <span>{s}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  </div>
-</div>
-
-{/* GENERATE PLANS */}
-<div style={{ background:'#fff', border:'1px solid #e5e7eb', borderRadius:12, padding:12, marginBottom:24 }}>
-  <h3 style={{ marginTop:0 }}>Generate Plans</h3>
-  <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap', marginBottom:10 }}>
-    <button onClick={generateDaily}>Generate Daily</button>
-    <button onClick={generateWeekly}>Generate Weekly</button>
-    <button onClick={generateUnit}>Generate Unit</button>
-    <span style={{ color:'#6b7280', fontSize:12 }}>— then export Word docs</span>
-  </div>
-
-  <div style={{ display:'grid', gridTemplateColumns:'repeat(12,1fr)', gap:12 }}>
-    <div style={{ gridColumn:'span 4' }}>
-      <label style={{fontWeight:600, fontSize:12, color:'#4b5563'}}>Daily Preview</label>
-      <pre style={{ whiteSpace:'pre-wrap' }}>{dailyPreview}</pre>
-      <button onClick={()=>downloadDoc(`Daily_Plan_${(slots.find(s=>s.topic||s.date)||slots[0]).date||'TBD'}`, `<pre>${dailyPreview}</pre>`)}>Download Daily (DOCX)</button>
-    </div>
-    <div style={{ gridColumn:'span 4' }}>
-      <label style={{fontWeight:600, fontSize:12, color:'#4b5563'}}>Weekly Preview</label>
-      <pre style={{ whiteSpace:'pre-wrap' }}>{weeklyPreview}</pre>
-      <button onClick={()=>downloadDoc('Weekly_Plan', `<pre>${weeklyPreview}</pre>`)}>Download Weekly (DOCX)</button>
-    </div>
-    <div style={{ gridColumn:'span 4' }}>
-      <label style={{fontWeight:600, fontSize:12, color:'#4b5563'}}>Unit Preview</label>
-      <pre style={{ whiteSpace:'pre-wrap' }}>{unitPreview}</pre>
-      <button onClick={()=>downloadDoc('Unit_Plan', `<pre>${unitPreview}</pre>`)}>Download Unit (DOCX)</button>
-    </div>
-  </div>
-</div>
-
-      {/* STATUS STRIP */}
-      {driveStatus ? (
-        <div style={{
-          fontSize:12,
-          border:'1px solid #c7e5ff',
-          background:'#ebf5ff',
-          color:'#0b64b1',
-          padding:'6px 10px',
-          borderRadius:8,
-          marginBottom:12
-        }}>{driveStatus}</div>
-      ) : null}
-
-      {/* AUTO DRIVE BACKUP CONTROLS */}
-      <div style={{
-        background:'#fff', border:'1px solid #e5e7eb', borderRadius:12, padding:12, marginBottom:12,
-        display:'flex', alignItems:'center', gap:10, flexWrap:'wrap'
-      }}>
-        <label style={{ display:'flex', alignItems:'center', gap:6 }}>
-          <input
-            type="checkbox"
-            checked={autoDriveBackup}
-            onChange={() => setAutoDriveBackup(!autoDriveBackup)}
-          />
-          Auto-backup to Drive every
-        </label>
-        <input
-          type="number"
-          value={autoDriveMinutes}
-          onChange={(e)=>setAutoDriveMinutes(Math.min(Math.max(parseInt(e.target.value||'3',10)||3,2),120))}
-          style={{ width:60 }}
-        />
-        <span>min</span>
-        <button onClick={backupToDrive} disabled={isDriveBacking}>Backup Now</button>
-        <span style={{ marginLeft:8, fontSize:12 }}>Last backup: {lastDriveBackupTs ? new Date(lastDriveBackupTs).toLocaleTimeString() : '—'}</span>
-        <span
-          style={{
-            marginLeft:8,
-            fontSize:12,
-            color: (nextBackupMs>0 && nextBackupMs<=10000) ? '#dc2626' : 'inherit',
-            fontWeight: (nextBackupMs>0 && nextBackupMs<=10000) ? 600 : 400
-          }}
-        >
-          Next backup in: {nextBackupMs>0
-            ? `${String(Math.floor(nextBackupMs/60000)).padStart(2,'0')}:${String(Math.floor((nextBackupMs%60000)/1000)).padStart(2,'0')}`
-            : '—'}
-        </span>
-      </div> 
-
-      {/* SETTINGS BAR */}
-      <div style={{ background:'#fff', border:'1px solid #e5e7eb', borderRadius:12, padding:12, marginBottom:12 }}>
-        <div style={{ display:'grid', gridTemplateColumns:'repeat(12,1fr)', gap:12 }}>
-          <div style={{ gridColumn:'span 3' }}>
-            <label style={{fontWeight:600, fontSize:12, color:'#4b5563'}}>State</label>
-            <select value={state} onChange={e=>setState(e.target.value)} style={{ width:'100%' }}>
-              {STATES.map(s=><option key={s} value={s}>{s}</option>)}
-            </select>
-          </div>
-          <div style={{ gridColumn:'span 3' }}>
-            <label style={{fontWeight:600, fontSize:12, color:'#4b5563'}}>Subject</label>
-            <select value={subject} onChange={e=>setSubject(e.target.value)} style={{ width:'100%' }}>
-              {SUBJECTS.map(s=><option key={s} value={s}>{s}</option>)}
-            </select>
-          </div>
-          <div style={{ gridColumn:'span 3' }}>
-            <label style={{fontWeight:600, fontSize:12, color:'#4b5563'}}>Grade Band</label>
-            <select value={gradeBand} onChange={e=>setGradeBand(e.target.value)} style={{ width:'100%' }}>
-              {GRADE_BANDS.map(g=><option key={g} value={g}>{g}</option>)}
-            </select>
-          </div>
-          <div style={{ gridColumn:'span 3' }}>
-            <label style={{fontWeight:600, fontSize:12, color:'#4b5563'}}>Objective Style</label>
-            <select value={objectiveStyle} onChange={e=>setObjectiveStyle(e.target.value)} style={{ width:'100%' }}>
-              {OBJECTIVE_STYLES.map(o=><option key={o} value={o}>{o}</option>)}
-            </select>
-          </div>
-          <div style={{ gridColumn:'span 6' }}>
-            <label style={{fontWeight:600, fontSize:12, color:'#4b5563'}}>Framework / Taxonomy</label>
-            <div style={{ display:'flex', gap:8 }}>
-              <select value={framework} onChange={e=>setFramework(e.target.value)} style={{ width:'50%' }}>
-                {FRAMEWORKS.map(f=><option key={f} value={f}>{f}</option>)}
-              </select>
-              <input
-                placeholder="Custom taxonomy (optional)"
-                value={customTaxonomy}
-                onChange={e=>setCustomTaxonomy(e.target.value)}
-                style={{ flex:1 }}
-              />
-            </div>
-          </div>
-          <div style={{ gridColumn:'span 6' }}>
-            <label style={{fontWeight:600, fontSize:12, color:'#4b5563'}}>Materials & Resources</label>
-            <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
-              {MATERIALS.map(m=>(
-                <button key={m} onClick={()=>toggleMaterial(m)} style={{
-                  border:'1px solid #d6dbe3', borderRadius:999, padding:'6px 10px', background: materials.includes(m) ? '#eef2ff' : '#fff'
-                }}>
-                  {materials.includes(m) ? '✓ ' : ''}{m}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div style={{ gridColumn:'span 12', display:'flex', alignItems:'center', gap:8 }}>
-            <input id="topicsOnly" type="checkbox" checked={topicsOnly} onChange={()=>setTopicsOnly(!topicsOnly)} />
-            <label htmlFor="topicsOnly">Generate from topics only (files optional)</label>
-          </div>
-        </div>
-      </div>
-
-      {/* UPLOAD SLOTS */}
-      <div style={{ background:'#fff', border:'1px solid #e5e7eb', borderRadius:12, padding:12, marginBottom:12 }}>
-        <h3 style={{ marginTop:0 }}>Upload Slots</h3>
-        <div style={{ display:'grid', gap:12 }}>
-          {slots.map((slot, idx)=>(
-            <div key={slot.id} style={{ background:'#fff', border:'1px solid #e5e7eb', borderRadius:12, padding:12 }}>
-              <div style={{ display:'grid', gridTemplateColumns:'repeat(12,1fr)', gap:12 }}>
-                <div style={{ gridColumn:'span 3' }}>
-                  <label style={{fontWeight:600, fontSize:12, color:'#4b5563'}}>Date</label>
-                  <input type="date" value={slot.date} onChange={e=>setSlotField(slot.id,'date', e.target.value)} />
-                </div>
-                <div style={{ gridColumn:'span 5' }}>
-                  <label style={{fontWeight:600, fontSize:12, color:'#4b5563'}}>Topic</label>
-                  <input placeholder="e.g., Causes of the American Revolution" value={slot.topic} onChange={e=>setSlotField(slot.id,'topic', e.target.value)} />
-                </div>
-                <div style={{ gridColumn:'span 4' }}>
-                  <label style={{fontWeight:600, fontSize:12, color:'#4b5563'}}>Attach Files / Pictures</label>
-                  <input type="file" multiple onChange={e=>handleFiles(slot.id, e.target.files)} />
-                  <div style={{ display:'flex', flexWrap:'wrap', gap:6, marginTop:6 }}>
-                    {slot.files.map((f,i)=>(
-                      <span key={i} style={{ border:'1px solid #d6dbe3', borderRadius:999, padding:'4px 8px', fontSize:12 }}>
-                        {f.name} <button onClick={()=>removeFile(slot.id,i,false)} style={{ marginLeft:6 }}>✕</button>
-                      </span>
-                    ))}
-                    {slot.images.map((f,i)=>(
-                      <span key={'img'+i} style={{ border:'1px solid #d6dbe3', borderRadius:999, padding:'4px 8px', fontSize:12 }}>
-                        {f.name} <button onClick={()=>removeFile(slot.id,i,true)} style={{ marginLeft:6 }}>✕</button>
-                      </span>
-                    ))}
-                  </div>
-                </div>
-                <div style={{ gridColumn:'span 12' }}>
-                  <label style={{fontWeight:600, fontSize:12, color:'#4b5563'}}>Pasted text snippet (optional)</label>
-                  <textarea value={slot.notes} onChange={e=>setSlotField(slot.id,'notes', e.target.value)} style={{ width:'100%', minHeight:90 }} />
-                </div>
-              </div>
-            </div>
+      {value.length>0 && (
+        <div className="flex flex-wrap gap-2 mt-2">
+          {value.map(tag => (
+            <span key={tag} className="inline-flex items-center gap-2 bg-gray-100 text-gray-800 px-2 py-1 rounded-full text-xs">
+              {tag}
+              <button onClick={()=>onChange(value.filter(x=>x!==tag))} className="text-gray-500 hover:text-gray-700">×</button>
+            </span>
           ))}
         </div>
-        <div style={{ display:'flex', gap:8, marginTop:8 }}>
-          <button onClick={()=>setSlots(prev=>[...prev,{id:`slot-${prev.length+1}`, date:'', topic:'', files:[], images:[], notes:'', other:''}])}>+ Add Slot</button>
-          <button onClick={()=>setSlots([{id:'slot-1', date:'', topic:'', files:[], images:[], notes:'', other:''}])}>Clear Slots</button>
+      )}
+    </div>
+  );
+}
+
+function FilesPicker({ label, files, setFiles, multiple=true }: {
+  label: string;
+  files: Uploaded[];
+  setFiles: (xs: Uploaded[]) => void;
+  multiple?: boolean;
+}) {
+  async function onPick(e: React.ChangeEvent<HTMLInputElement>) {
+    const selected = Array.from(e.target.files || []);
+    const enriched: Uploaded[] = [];
+    for (const file of selected) {
+      const text = await readFileBestEffort(file);
+      enriched.push({ file, text, name: file.name, type: file.type, size: file.size });
+    }
+    setFiles(multiple ? [...files, ...enriched] : enriched);
+    e.target.value = "";
+  }
+  function removeAt(i:number){ setFiles(files.filter((_,idx)=>idx!==i)); }
+  return (
+    <div>
+      <Label>{label}</Label>
+      <input
+        type="file"
+        multiple={multiple}
+        onChange={onPick}
+        accept=".txt,.md,.csv,.json,.html,.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.png,.jpg,.jpeg,.gif,.heic"
+        className="block w-full text-sm text-gray-700 file:mr-4 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"
+      />
+      {files.length>0 && (
+        <ul className="mt-2 space-y-1 text-sm">
+          {files.map((f, i) => (
+            <li key={i} className="flex items-center justify-between border rounded-lg px-2 py-1">
+              <span className="truncate">{f.name} <span className="text-gray-400">({Math.ceil(f.size/1024)} KB)</span></span>
+              <button onClick={()=>removeAt(i)} className="text-gray-500 hover:text-red-600">Remove</button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="text-xs text-gray-500 mt-1">Accepts Google Docs/Slides exports, Microsoft Word/PowerPoint, PDF, Excel, images, and plain text. We can read .txt/.md/.csv/.json/.html directly in-browser.</p>
+    </div>
+  );
+}
+
+// ---------- Daily ----------
+
+type DailyForm = {
+  date?: string;
+  topic: string;
+  criteriaForSuccess: string;
+  whatToKnowAndDo: string;
+  standards: string[];
+  whyRelevant: string;
+  objectiveStyle?: string;
+  frameworkTaxonomy?: string; // optional
+  gradeLevel?: string;
+  activityDescription: string;
+  checksForUnderstanding: string;
+  accommodations: string;
+  differentiationStrategies: string;
+  materialsAndResources: string;
+  exemplarAnswerKey: string;
+  interventions: {
+    tier1: boolean; tier2: boolean; tier3: boolean;
+  };
+  coTeachingSupport: string[];
+  customInstructions: string; // pre-AI custom prompt space
+  files: Uploaded[];
+  aiEnabled: boolean;
+};
+
+function DailyTab({ value, onChange }:{ value: DailyForm; onChange: (v:DailyForm)=>void }) {
+  const grades = toDropdown(["k","1","2","3","4","5","6","7","8","9","10","11","12"]);
+  const coTeachOptions = ["Pre-brief", "Station Teaching", "Parallel Teaching", "Alternative Teaching", "Team Teaching", "Post-brief"];
+  function set<K extends keyof DailyForm>(key: K, val: DailyForm[K]){ onChange({ ...value, [key]: val }); }
+  function toggleCoTeach(s: string){
+    const has = value.coTeachingSupport.includes(s);
+    set("coTeachingSupport", has ? value.coTeachingSupport.filter(x=>x!==s) : [...value.coTeachingSupport, s]);
+  }
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div>
+          <Label>Date</Label>
+          <Input type="date" value={value.date || ""} onChange={e=>set("date", e.target.value)}/>
+        </div>
+        <div className="md:col-span-2">
+          <Label>Topic</Label>
+          <Input value={value.topic} onChange={e=>set("topic", e.target.value)} placeholder="e.g., The Silk Road – Trade and Cultural Diffusion"/>
         </div>
       </div>
 
-      {/* STANDARDS & OPTIONS */}
-      <div style={{ background:'#fff', border:'1px solid #e5e7eb', borderRadius:12, padding:12, marginBottom:12 }}>
-        <h3 style={{ marginTop:0 }}>Standards & Options</h3>
-        <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
-          <input
-            placeholder="Search standards (keyword/code)"
-            value={standardsSearch}
-            onChange={e=>setStandardsSearch(e.target.value)}
-            style={{ flex:1, minWidth:240 }}
-          />
-          <button onClick={suggestStandards}>Suggest from topics/search</button>
-          <button onClick={()=>setStandardsSelected([])}>Clear selected</button>
-          <button onClick={()=>importRef.current?.click()}>Import CO Standards (.json)</button>
-          <button onClick={exportStandards}>Export Standards (.json)</button>
-          <input ref={importRef} type="file" accept="application/json" style={{ display:'none' }} onChange={handleImport} />
-          <span style={{ marginLeft:'auto', color:'#6b7280', fontSize:12 }}>
-            {standardsCount ? `${standardsCount} standards loaded` : 'using sample set'}
-          </span>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <Label>Criteria for Success</Label>
+          <Textarea value={value.criteriaForSuccess} onChange={e=>set("criteriaForSuccess", e.target.value)} placeholder="What does success look like for students?"/>
         </div>
-        <div style={{ height:1, background:'#e5e7eb', margin:'10px 0' }} />
-        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
-          <div>
-            <label style={{fontWeight:600, fontSize:12, color:'#4b5563'}}>Suggestions</label>
-            <div>
-              {standardsSuggested.map(s=>(
-                <div key={s} style={{ margin:'6px 0' }}>
-                  <button onClick={()=>addStandard(s)} style={{ marginRight:6 }}>Add</button>
-                  <span style={{ color:'#6b7280' }}>{s}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-          <div>
-            <label style={{fontWeight:600, fontSize:12, color:'#4b5563'}}>Selected</label>
-            <div>
-              {standardsSelected.map(s=>(
-                <div key={s} style={{ margin:'6px 0' }}>
-                  <button onClick={()=>removeStandard(s)} style={{ marginRight:6 }}>Remove</button>
-                  <span>{s}</span>
-                </div>
-              ))}
-            </div>
-          </div>
+        <div>
+          <Label>What Students Need to Know & Do</Label>
+          <Textarea value={value.whatToKnowAndDo} onChange={e=>set("whatToKnowAndDo", e.target.value)} placeholder="Key knowledge and skills to master"/>
         </div>
       </div>
 
-      {/* GENERATE PLANS */}
-      <div style={{ background:'#fff', border:'1px solid #e5e7eb', borderRadius:12, padding:12, marginBottom:24 }}>
-        <h3 style={{ marginTop:0 }}>Generate Plans</h3>
-        <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap', marginBottom:10 }}>
-          <button onClick={generateDaily}>Generate Daily</button>
-          <button onClick={generateWeekly}>Generate Weekly</button>
-          <button onClick={generateUnit}>Generate Unit</button>
-          <span style={{ color:'#6b7280', fontSize:12 }}>— then export Word docs</span>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <Label>Standards (Colorado / All Subjects)</Label>
+          <MultiTagInput value={value.standards} onChange={xs=>set("standards", xs)} placeholder="Add standard code (e.g., SS.H1.1) and press Enter"/>
+          <p className="text-xs text-gray-500 mt-1">Use any framework; codes are just tags here.</p>
         </div>
+        <div>
+          <Label>Why is the lesson relevant?</Label>
+          <Textarea value={value.whyRelevant} onChange={e=>set("whyRelevant", e.target.value)} placeholder="Real-world relevance, transfer, why it matters"/>
+        </div>
+      </div>
 
-        <div style={{ display:'grid', gridTemplateColumns:'repeat(12,1fr)', gap:12 }}>
-          <div style={{ gridColumn:'span 4' }}>
-            <label style={{fontWeight:600, fontSize:12, color:'#4b5563'}}>Daily Preview</label>
-            <pre style={{ whiteSpace:'pre-wrap' }}>{dailyPreview}</pre>
-            <button onClick={()=>downloadDoc(`Daily_Plan_${(slots.find(s=>s.topic||s.date)||slots[0]).date||'TBD'}`, `<pre>${dailyPreview}</pre>`)}>Download Daily (DOCX)</button>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div>
+          <Label>Objective Style</Label>
+          <Input value={value.objectiveStyle || ""} onChange={e=>set("objectiveStyle", e.target.value)} placeholder="e.g., SWBAT / I can…"/>
+        </div>
+        <div>
+          <Label>Framework/Taxonomy (optional)</Label>
+          <Input value={value.frameworkTaxonomy || ""} onChange={e=>set("frameworkTaxonomy", e.target.value)} placeholder="e.g., Bloom's, Webb DOK"/>
+        </div>
+        <div>
+          <Label>Grade Level</Label>
+          <Select value={value.gradeLevel} onChange={v=>set("gradeLevel", v)} options={grades} placeholder="Select grade"/>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <Label>Activity / Procedure</Label>
+          <Textarea value={value.activityDescription} onChange={e=>set("activityDescription", e.target.value)} placeholder="Warm-up → Mini-lesson → Guided practice → Independent → Exit ticket"/>
+        </div>
+        <div>
+          <Label>Checks for Understanding / Assessment-Exit</Label>
+          <Textarea value={value.checksForUnderstanding} onChange={e=>set("checksForUnderstanding", e.target.value)} placeholder="Exit ticket, CFU questions, quick quizzes"/>
+          <Textarea className="mt-2" value={value.differentiationStrategies} onChange={e=>set("differentiationStrategies", e.target.value)} placeholder="Differentiation strategies (tiered tasks, choice, flexible grouping)"/>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <Label>Accommodations</Label>
+          <Textarea value={value.accommodations} onChange={e=>set("accommodations", e.target.value)} placeholder="Accommodations, supports, scaffolds"/>
+        </div>
+        <div>
+          <Label>Materials & Resources</Label>
+          <Textarea value={value.materialsAndResources} onChange={e=>set("materialsAndResources", e.target.value)} placeholder="Texts, slides, manipulatives, links, handouts"/>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <Label>Interventions (RTI/MTSS)</Label>
+          <div className="flex gap-4 flex-wrap">
+            <Checkbox label="Tier 1 – Core" checked={value.interventions.tier1} onChange={v=>set("interventions", { ...value.interventions, tier1: v })}/>
+            <Checkbox label="Tier 2 – Strategic" checked={value.interventions.tier2} onChange={v=>set("interventions", { ...value.interventions, tier2: v })}/>
+            <Checkbox label="Tier 3 – Intensive" checked={value.interventions.tier3} onChange={v=>set("interventions", { ...value.interventions, tier3: v })}/>
           </div>
-          <div style={{ gridColumn:'span 4' }}>
-            <label style={{fontWeight:600, fontSize:12, color:'#4b5563'}}>Weekly Preview</label>
-            <pre style={{ whiteSpace:'pre-wrap' }}>{weeklyPreview}</pre>
-            <button onClick={()=>downloadDoc('Weekly_Plan', `<pre>${weeklyPreview}</pre>`)}>Download Weekly (DOCX)</button>
-          </div>
-          <div style={{ gridColumn:'span 4' }}>
-            <label style={{fontWeight:600, fontSize:12, color:'#4b5563'}}>Unit Preview</label>
-            <pre style={{ whiteSpace:'pre-wrap' }}>{unitPreview}</pre>
-            <button onClick={()=>downloadDoc('Unit_Plan', `<pre>${unitPreview}</pre>`)}>Download Unit (DOCX)</button>
-          </div>
+        </div>
+        <div>
+          <Label>Exemplar / Answer Key (optional)</Label>
+          <Textarea value={value.exemplarAnswerKey} onChange={e=>set("exemplarAnswerKey", e.target.value)} placeholder="Notes for exemplar work or answer key"/>
+        </div>
+      </div>
+
+      <FilesPicker label="Attach Files (docs, slides, pdf, images)" files={value.files} setFiles={(xs)=>set("files", xs)} />
+
+      <div>
+        <Label>Custom instructions to AI (optional)</Label>
+        <Textarea value={value.customInstructions} onChange={e=>set("customInstructions", e.target.value)} placeholder="Give tone/length, or paste rubric. If left blank, default prompt is used."/>
+        <div className="mt-2 flex items-center gap-2">
+          <input id="aiDaily" type="checkbox" checked={value.aiEnabled} onChange={e=>set("aiEnabled", e.target.checked)} />
+          <label htmlFor="aiDaily" className="text-sm">Use AI to help generate this plan</label>
         </div>
       </div>
     </div>
-  </div>
-);
+  );
+}
 
+function dailyToHTML(d: DailyForm): string {
+  const filesList = d.files.map(f=>`<li>${escapeHtml(f.name)}</li>`).join("");
+  const coTeach = d.coTeachingSupport.join(", ") || "[select if applicable]";
+  const tiers = [d.interventions.tier1?"Tier 1":null, d.interventions.tier2?"Tier 2":null, d.interventions.tier3?"Tier 3":null].filter(Boolean).join(", ") || "[not specified]";
+  const standards = d.standards.length ? d.standards.join("; ") : "[mapped]";
+
+  return [
+    `<h1>Daily Lesson Plan</h1>`,
+    `<p class="small"><b>Date:</b> ${escapeHtml(d.date || "[choose date]")} — <b>Grade:</b> ${escapeHtml(d.gradeLevel || "[grade]")}</p>`,
+    table([
+      ["Topic", escapeHtml(d.topic || "")],
+      ["Criteria for Success", nl2br(d.criteriaForSuccess)],
+      ["Know & Do", nl2br(d.whatToKnowAndDo)],
+      ["Standards", escapeHtml(standards)],
+      ["Why this lesson (Relevance/Transfer)", nl2br(d.whyRelevant)],
+      ["Objective Style", escapeHtml(d.objectiveStyle || "")],
+      ["Framework/Taxonomy", escapeHtml(d.frameworkTaxonomy || "")],
+    ]),
+    `<h3>Lesson Components</h3>`,
+    table([
+      ["Activity / Procedure", nl2br(d.activityDescription)],
+      ["Checks for Understanding / Assessment-Exit", nl2br(d.checksForUnderstanding)],
+      ["Differentiation", nl2br(d.differentiationStrategies)],
+      ["Accommodations", nl2br(d.accommodations)],
+      ["Materials & Resources", nl2br(d.materialsAndResources)],
+      ["Interventions (RTI/MTSS)", escapeHtml(tiers)],
+      ["Co-Teaching Support", escapeHtml(coTeach)],
+      ["Exemplar / Answer Key", nl2br(d.exemplarAnswerKey)],
+      ["Attachments", filesList ? `<ul>${filesList}</ul>` : "None"],
+    ]),
+  ].join("");
+}
+
+// ---------- Weekly ----------
+
+type WeeklyDay = {
+  date?: string;
+  topic: string;
+  keyActivities: string;
+  assessmentExit: string;
+  materials: string;
+  notes: string;
+  files: Uploaded[];
+};
+
+type WeeklyForm = {
+  gradeLevel?: string;
+  subjectsIntegrated: string[];
+  warmUp: string;
+  reflection: string;
+  differentiation: string;
+  standards: string[];
+  whyRelevant: string;
+  pacingAgendas: string; // free text
+  other: string;
+  days: WeeklyDay[]; // up to 5
+  customInstructions: string;
+  aiEnabled: boolean;
+};
+
+function WeeklyTab({ value, onChange }: { value: WeeklyForm; onChange: (v:WeeklyForm)=>void }) {
+  const grades = toDropdown(["k","1","2","3","4","5","6","7","8","9","10","11","12"]);
+  function set<K extends keyof WeeklyForm>(key: K, val: WeeklyForm[K]){ onChange({ ...value, [key]: val }); }
+  function updateDay(i:number, patch: Partial<WeeklyDay>){
+    const arr = value.days.slice();
+    arr[i] = { ...arr[i], ...patch };
+    set("days", arr);
+  }
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div>
+          <Label>Grade Level</Label>
+          <Select value={value.gradeLevel} onChange={v=>set("gradeLevel", v)} options={grades} placeholder="Select grade"/>
+        </div>
+        <div className="md:col-span-2">
+          <Label>Subjects Integrated (multi-select)</Label>
+          <MultiTagInput value={value.subjectsIntegrated} onChange={xs=>set("subjectsIntegrated", xs)} placeholder="e.g., ELA, Math, Science, Art"/>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <Label>Warm-up (applies to week)</Label>
+          <Textarea value={value.warmUp} onChange={e=>set("warmUp", e.target.value)} placeholder="Bell-ringer routine"/>
+        </div>
+        <div>
+          <Label>Reflection (applies to week)</Label>
+          <Textarea value={value.reflection} onChange={e=>set("reflection", e.target.value)} placeholder="How will students reflect on learning?"/>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <Label>Differentiation (applies to week)</Label>
+          <Textarea value={value.differentiation} onChange={e=>set("differentiation", e.target.value)} placeholder="Strategies across the week"/>
+        </div>
+        <div>
+          <Label>Standards (Colorado / All Subjects)</Label>
+          <MultiTagInput value={value.standards} onChange={xs=>set("standards", xs)} placeholder="Add code and press Enter"/>
+          <Textarea className="mt-2" value={value.whyRelevant} onChange={e=>set("whyRelevant", e.target.value)} placeholder="Why this week matters / relevance"/>
+        </div>
+      </div>
+
+      <div>
+        <Label>Pacing / Agendas (free text)</Label>
+        <Textarea value={value.pacingAgendas} onChange={e=>set("pacingAgendas", e.target.value)} placeholder="Any extra pacing/agenda details for the week"/>
+      </div>
+
+      <div>
+        <Label>Other</Label>
+        <Textarea value={value.other} onChange={e=>set("other", e.target.value)} placeholder="Anything else to include in the weekly charts"/>
+      </div>
+
+      <div className="space-y-4">
+        <h3 className="text-lg font-semibold">Days (up to 5)</h3>
+        {value.days.map((day, i) => (
+          <div key={i} className="border rounded-xl p-3">
+            <div className="grid grid-cols-1 md:grid-cols-6 gap-3">
+              <div>
+                <Label>Date</Label>
+                <Input type="date" value={day.date || ""} onChange={e=>updateDay(i, { date: e.target.value })}/>
+              </div>
+              <div className="md:col-span-2">
+                <Label>Topic</Label>
+                <Input value={day.topic} onChange={e=>updateDay(i, { topic: e.target.value })} placeholder={`Day ${i+1} topic`}/>
+              </div>
+              <div className="md:col-span-3">
+                <Label>Key Activities</Label>
+                <Textarea value={day.keyActivities} onChange={e=>updateDay(i, { keyActivities: e.target.value })}/>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-3">
+              <div>
+                <Label>Assessment / Exit</Label>
+                <Textarea value={day.assessmentExit} onChange={e=>updateDay(i, { assessmentExit: e.target.value })}/>
+              </div>
+              <div>
+                <Label>Materials</Label>
+                <Textarea value={day.materials} onChange={e=>updateDay(i, { materials: e.target.value })}/>
+              </div>
+              <div>
+                <Label>Notes</Label>
+                <Textarea value={day.notes} onChange={e=>updateDay(i, { notes: e.target.value })}/>
+              </div>
+            </div>
+            <div className="mt-3">
+              <FilesPicker label="Attach Files for this day" files={day.files} setFiles={(xs)=>updateDay(i, { files: xs })}/>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div>
+        <Label>Custom instructions to AI (optional)</Label>
+        <Textarea value={value.customInstructions} onChange={e=>set("customInstructions", e.target.value)} placeholder="Tone, length, reading level…"/>
+        <div className="mt-2 flex items-center gap-2">
+          <input id="aiWeekly" type="checkbox" checked={value.aiEnabled} onChange={e=>set("aiEnabled", e.target.checked)} />
+          <label htmlFor="aiWeekly" className="text-sm">Use AI to help generate weekly charts</label>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function weeklyToHTML(w: WeeklyForm): string {
+  const stds = w.standards.length ? w.standards.join("; ") : "[mapped]";
+  const header = [
+    `<h1>Weekly Plan</h1>`,
+    table([
+      ["Grade", escapeHtml(w.gradeLevel || "[grade]")],
+      ["Subjects Integrated", escapeHtml(w.subjectsIntegrated.join(", ") || "[select]")],
+      ["Standards", escapeHtml(stds)],
+      ["Why this week / relevance", nl2br(w.whyRelevant)],
+      ["Differentiation (applies to week)", nl2br(w.differentiation)],
+      ["Warm-up", nl2br(w.warmUp)],
+      ["Reflection", nl2br(w.reflection)],
+      ["Pacing / Agendas", nl2br(w.pacingAgendas)],
+      ["Other", nl2br(w.other)],
+    ])
+  ].join("");
+
+  const dayCharts = w.days.map((d, idx) => {
+    const filesList = d.files.map(f=>`<li>${escapeHtml(f.name)}</li>`).join("");
+    const rows: Array<[string, string]> = [
+      ["Day", `Day ${idx+1}`],
+      ["Date", escapeHtml(d.date || "[date]")],
+      ["Topic", escapeHtml(d.topic || "")],
+      ["Key Activities", nl2br(d.keyActivities || "")],
+      ["Assessment / Exit", nl2br(d.assessmentExit || "")],
+      ["Materials", nl2br(d.materials || "")],
+      ["Notes", nl2br(d.notes || "")],
+      ["Attachments", filesList ? `<ul>${filesList}</ul>` : "None"],
+    ];
+    return table(rows, true, `Day ${idx+1} — ${escapeHtml(d.topic || "[topic]")}`);
+  }).join("");
+
+  return header + dayCharts;
+}
+
+// ---------- Unit ----------
+
+type UnitForm = {
+  unitTitle: string;
+  lengthOfTime: string;
+  gradeLevel?: string;
+  standards: string[];         // DOK / all subjects / NGSS etc (free tags)
+  highLevelResources: string;
+  unitTopics: string[];
+  files: Uploaded[];
+
+  essentialQuestions: string;
+  overviewDescription: string;
+  outcomes: string;
+  assignmentsAndAssessments: string;
+  vocabularyAcademic: string;
+  vocabularyContent: string;
+
+  ellSupports: string[];
+  ellOther: string;
+
+  // Learning Cycle (structured)
+  connectPrior: string;
+  introduceNew: string;
+  practiceDeepen: string;
+  application: string;
+  extension: string;
+
+  learningProgression: string;      // additional free text if desired
+  commonMisconceptions: string;
+
+  pacingWeeks: Array<{
+    title: string; // Topic (name of lesson)
+    objective: string;
+    commonErrors: string;
+    notes: string;
+  }>;
+
+  exemplarAnswerKey: string;
+
+  customInstructions: string;
+  aiEnabled: boolean;
+};
+
+function UnitTab({ value, onChange }: { value: UnitForm; onChange: (v:UnitForm)=>void }) {
+  const grades = toDropdown(["k","1","2","3","4","5","6","7","8","9","10","11","12"]);
+  function set<K extends keyof UnitForm>(key: K, val: UnitForm[K]){ onChange({ ...value, [key]: val }); }
+  function updateWeek(i:number, patch: Partial<UnitForm["pacingWeeks"][number]>) {
+    const arr = value.pacingWeeks.slice();
+    arr[i] = { ...arr[i], ...patch };
+    set("pacingWeeks", arr);
+  }
+
+  const ellOptions = ["Sentence Frames", "Cognate Recognition", "Graphic Organizer", "Visuals/Sketch-notes", "Language Objectives"];
+  function toggleELL(s: string){
+    const has = value.ellSupports.includes(s);
+    set("ellSupports", has ? value.ellSupports.filter(x=>x!==s) : [...value.ellSupports, s]);
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="md:col-span-2">
+          <Label>Unit Title</Label>
+          <Input value={value.unitTitle} onChange={e=>set("unitTitle", e.target.value)} placeholder="e.g., Ancient Civilizations: Trade & Technology"/>
+        </div>
+        <div>
+          <Label>Length of Time</Label>
+          <Input value={value.lengthOfTime} onChange={e=>set("lengthOfTime", e.target.value)} placeholder="e.g., 4–6 weeks"/>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div>
+          <Label>Grade Level</Label>
+          <Select value={value.gradeLevel} onChange={v=>set("gradeLevel", v)} options={grades} placeholder="Select grade"/>
+        </div>
+        <div className="md:col-span-2">
+          <Label>Standards (tags)</Label>
+          <MultiTagInput value={value.standards} onChange={xs=>set("standards", xs)} placeholder="Add standard code and press Enter"/>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <Label>High-level Resources</Label>
+          <Textarea value={value.highLevelResources} onChange={e=>set("highLevelResources", e.target.value)} placeholder="Major texts, anchor resources, core materials"/>
+        </div>
+        <div>
+          <Label>Unit Topics</Label>
+          <MultiTagInput value={value.unitTopics} onChange={xs=>set("unitTopics", xs)} placeholder="Add a topic and press Enter"/>
+        </div>
+      </div>
+
+      <FilesPicker label="Attach Files for Unit (docs, slides, pdf, images)" files={value.files} setFiles={(xs)=>set("files", xs)} />
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <Label>Essential Questions</Label>
+          <Textarea value={value.essentialQuestions} onChange={e=>set("essentialQuestions", e.target.value)}/>
+        </div>
+        <div>
+          <Label>Unit Overview / Description</Label>
+          <Textarea value={value.overviewDescription} onChange={e=>set("overviewDescription", e.target.value)}/>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <Label>Outcomes (Know & Do; cross-subject integration)</Label>
+          <Textarea value={value.outcomes} onChange={e=>set("outcomes", e.target.value)}/>
+        </div>
+        <div>
+          <Label>Assignments & Assessments</Label>
+          <Textarea value={value.assignmentsAndAssessments} onChange={e=>set("assignmentsAndAssessments", e.target.value)} placeholder="Will incorporate attached files if provided"/>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <Label>Vocabulary (Academic / Tier 2)</Label>
+          <Textarea value={value.vocabularyAcademic} onChange={e=>set("vocabularyAcademic", e.target.value)}/>
+        </div>
+        <div>
+          <Label>Vocabulary (Content / Tier 3 + Language)</Label>
+          <Textarea value={value.vocabularyContent} onChange={e=>set("vocabularyContent", e.target.value)}/>
+        </div>
+      </div>
+
+      <div>
+        <Label>ELL Supports</Label>
+        <div className="flex gap-3 flex-wrap">
+          {ellOptions.map(opt => (
+            <Checkbox key={opt} label={opt} checked={value.ellSupports.includes(opt)} onChange={()=>toggleELL(opt)} />
+          ))}
+        </div>
+        <Textarea className="mt-2" value={value.ellOther} onChange={e=>set("ellOther", e.target.value)} placeholder="Other supports (optional)"/>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <Label>Learning Cycle — Connect Prior Learning</Label>
+          <Textarea value={value.connectPrior} onChange={e=>set("connectPrior", e.target.value)} placeholder="Activate prior knowledge; connect to previous learning"/>
+        </div>
+        <div>
+          <Label>Learning Cycle — Introduce New Content/Concept</Label>
+          <Textarea value={value.introduceNew} onChange={e=>set("introduceNew", e.target.value)} placeholder="Direct instruction / inquiry launch"/>
+        </div>
+        <div>
+          <Label>Learning Cycle — Practice & Deepen</Label>
+          <Textarea value={value.practiceDeepen} onChange={e=>set("practiceDeepen", e.target.value)} placeholder="Guided/independent practice; checks for understanding"/>
+        </div>
+        <div>
+          <Label>Learning Cycle — Application</Label>
+          <Textarea value={value.application} onChange={e=>set("application", e.target.value)} placeholder="Performance task / real-world transfer"/>
+        </div>
+        <div className="md:col-span-2">
+          <Label>Learning Cycle — Extension</Label>
+          <Textarea value={value.extension} onChange={e=>set("extension", e.target.value)} placeholder="Enrichment / cross-curricular"/>
+        </div>
+      </div>
+
+      <div>
+        <Label>Learning Progression & Strategies (sequence)</Label>
+        <Textarea value={value.learningProgression} onChange={e=>set("learningProgression", e.target.value)} placeholder="Sequence of activities; instructional strategies"/>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <Label>Common Misconceptions</Label>
+          <Textarea value={value.commonMisconceptions} onChange={e=>set("commonMisconceptions", e.target.value)}/>
+        </div>
+        <div>
+          <Label>Exemplar / Answer Key (optional)</Label>
+          <Textarea value={value.exemplarAnswerKey} onChange={e=>set("exemplarAnswerKey", e.target.value)}/>
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        <h3 className="text-lg font-semibold">Pacing Guide — Week Squares</h3>
+        {value.pacingWeeks.map((w, i) => (
+          <div key={i} className="border rounded-xl p-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <Label>Week {i+1} Title / Topic</Label>
+              <Input value={w.title} onChange={e=>updateWeek(i, { title: e.target.value })}/>
+            </div>
+            <div>
+              <Label>Objective</Label>
+              <Input value={w.objective} onChange={e=>updateWeek(i, { objective: e.target.value })}/>
+            </div>
+            <div className="md:col-span-2">
+              <Label>Common Errors</Label>
+              <Textarea value={w.commonErrors} onChange={e=>updateWeek(i, { commonErrors: e.target.value })}/>
+            </div>
+            <div className="md:col-span-2">
+              <Label>Other / Notes</Label>
+              <Textarea value={w.notes} onChange={e=>updateWeek(i, { notes: e.target.value })}/>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div>
+        <Label>Custom instructions to AI (optional)</Label>
+        <Textarea value={value.customInstructions} onChange={e=>set("customInstructions", e.target.value)} placeholder="E.g., cite sources, use bullet lists, align to DOK 2–3"/>
+        <div className="mt-2 flex items-center gap-2">
+          <input id="aiUnit" type="checkbox" checked={value.aiEnabled} onChange={e=>set("aiEnabled", e.target.checked)} />
+          <label htmlFor="aiUnit" className="text-sm">Use AI to help generate the unit pack</label>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function unitToHTML(u: UnitForm): string {
+  const stds = u.standards.length ? u.standards.join("; ") : "[mapped]";
+  const topics = u.unitTopics.map(t=>`<li>${escapeHtml(t)}</li>`).join("");
+  const filesList = u.files.map(f=>`<li>${escapeHtml(f.name)}</li>`).join("");
+
+  const weeks = u.pacingWeeks.map((w, i) => {
+    return table([
+      ["Topic", escapeHtml(w.title || "")],
+      ["Objective", escapeHtml(w.objective || "")],
+      ["Common Errors", nl2br(w.commonErrors || "")],
+      ["Other / Notes", nl2br(w.notes || "")],
+    ], true, `Week ${i+1}`);
+  }).join("");
+
+  const ell = u.ellSupports.join(", ") + (u.ellOther ? `; ${escapeHtml(u.ellOther)}` : "") || "[select]";
+
+  return [
+    `<h1>Unit Plan</h1>`,
+    table([
+      ["Unit Title", escapeHtml(u.unitTitle || "")],
+      ["Length of Time", escapeHtml(u.lengthOfTime || "")],
+      ["Grade", escapeHtml(u.gradeLevel || "[grade]")],
+      ["Standards", escapeHtml(stds)],
+      ["High-level Resources", nl2br(u.highLevelResources)],
+      ["Topics", topics ? `<ul>${topics}</ul>` : "—"],
+      ["Attachments", filesList ? `<ul>${filesList}</ul>` : "None"],
+    ]),
+    `<h3>Core Components</h3>`,
+    table([
+      ["Essential Questions", nl2br(u.essentialQuestions)],
+      ["Overview / Description", nl2br(u.overviewDescription)],
+      ["Outcomes (Know & Do; Cross-subject)", nl2br(u.outcomes)],
+      ["Assignments & Assessments", nl2br(u.assignmentsAndAssessments)],
+      ["Vocabulary — Academic (Tier 2)", nl2br(u.vocabularyAcademic)],
+      ["Vocabulary — Content (Tier 3 + Language)", nl2br(u.vocabularyContent)],
+      ["ELL Supports", escapeHtml(ell)],
+    ]),
+    `<h3>Learning Cycle</h3>`,
+    table([
+      ["Connect Prior Learning", nl2br(u.connectPrior)],
+      ["Introduce New Content/Concept", nl2br(u.introduceNew)],
+      ["Practice & Deepen", nl2br(u.practiceDeepen)],
+      ["Application", nl2br(u.application)],
+      ["Extension", nl2br(u.extension)],
+    ], true),
+    `<h3>Learning Progression & Common Misconceptions</h3>`,
+    table([
+      ["Learning Progression & Strategies", nl2br(u.learningProgression)],
+      ["Common Misconceptions", nl2br(u.commonMisconceptions)],
+      ["Exemplar / Answer Key", nl2br(u.exemplarAnswerKey)],
+    ]),
+    `<h3>Pacing Guide</h3>`,
+    weeks,
+  ].join("");
+}
+
+// ---------- App Shell ----------
+
+type GenState = { status: "idle" | "working" | "done" | "error"; html?: string; error?: string };
+
+const initialDaily: DailyForm = {
+  date: "",
+  topic: "",
+  criteriaForSuccess: "",
+  whatToKnowAndDo: "",
+  standards: [],
+  whyRelevant: "",
+  objectiveStyle: "",
+  frameworkTaxonomy: "",
+  gradeLevel: "",
+  activityDescription: "",
+  checksForUnderstanding: "",
+  accommodations: "",
+  differentiationStrategies: "",
+  materialsAndResources: "",
+  exemplarAnswerKey: "",
+  interventions: { tier1: false, tier2: false, tier3: false },
+  coTeachingSupport: [],
+  customInstructions: "",
+  files: [],
+  aiEnabled: true,
+};
+
+const initialWeekly: WeeklyForm = {
+  gradeLevel: "",
+  subjectsIntegrated: [],
+  warmUp: "",
+  reflection: "",
+  differentiation: "",
+  standards: [],
+  whyRelevant: "",
+  pacingAgendas: "",
+  other: "",
+  days: [
+    { date: "", topic: "", keyActivities: "", assessmentExit: "", materials: "", notes: "", files: [] },
+    { date: "", topic: "", keyActivities: "", assessmentExit: "", materials: "", notes: "", files: [] },
+    { date: "", topic: "", keyActivities: "", assessmentExit: "", materials: "", notes: "", files: [] },
+    { date: "", topic: "", keyActivities: "", assessmentExit: "", materials: "", notes: "", files: [] },
+    { date: "", topic: "", keyActivities: "", assessmentExit: "", materials: "", notes: "", files: [] },
+  ],
+  customInstructions: "",
+  aiEnabled: true,
+};
+
+const initialUnit: UnitForm = {
+  unitTitle: "",
+  lengthOfTime: "",
+  gradeLevel: "",
+  standards: [],
+  highLevelResources: "",
+  unitTopics: [],
+  files: [],
+  essentialQuestions: "",
+  overviewDescription: "",
+  outcomes: "",
+  assignmentsAndAssessments: "",
+  vocabularyAcademic: "",
+  vocabularyContent: "",
+  ellSupports: [],
+  ellOther: "",
+  connectPrior: "",
+  introduceNew: "",
+  practiceDeepen: "",
+  application: "",
+  extension: "",
+  learningProgression: "",
+  commonMisconceptions: "",
+  pacingWeeks: Array.from({length: 6}, ()=>({
+    title: "", objective: "", commonErrors: "", notes: ""
+  })),
+  exemplarAnswerKey: "",
+  customInstructions: "",
+  aiEnabled: true,
+};
+
+const tabs = [
+  { id: "daily", label: "Daily Plan" },
+  { id: "weekly", label: "Weekly Plan" },
+  { id: "unit", label: "Unit Plan" },
+] as const;
+
+export default function App() {
+  const [tab, setTab] = useState<PlanType>("daily");
+
+  const [daily, setDaily] = useState<DailyForm>(initialDaily);
+  const [weekly, setWeekly] = useState<WeeklyForm>(initialWeekly);
+  const [unit, setUnit] = useState<UnitForm>(initialUnit);
+
+  const [gen, setGen] = useState<GenState>({ status: "idle" });
+  const [useAI, setUseAI] = useState<boolean>(true);
+
+  useEffect(()=>{
+    if (tab === "daily") setUseAI(daily.aiEnabled);
+    if (tab === "weekly") setUseAI(weekly.aiEnabled);
+    if (tab === "unit") setUseAI(unit.aiEnabled);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
+
+  function setAIForTab(v:boolean){
+    if (tab === "daily") setDaily({ ...daily, aiEnabled: v });
+    if (tab === "weekly") setWeekly({ ...weekly, aiEnabled: v });
+    if (tab === "unit") setUnit({ ...unit, aiEnabled: v });
+    setUseAI(v);
+  }
+
+  async function generate() {
+    setGen({ status: "working" });
+    try {
+      let html: string;
+      const payload: any = { planType: tab, customInstructions: "" };
+
+      if (tab === "daily") {
+        html = dailyToHTML(daily);
+        payload.form = daily;
+        payload.filesText = extractFilesText(daily.files);
+        payload.customInstructions = daily.customInstructions;
+      } else if (tab === "weekly") {
+        html = weeklyToHTML(weekly);
+        payload.form = weekly;
+        payload.filesText = weekly.days.flatMap(d => d.files).map(f => ({ name: f.name, text: f.text || "" }));
+        payload.customInstructions = weekly.customInstructions;
+      } else {
+        html = unitToHTML(unit);
+        payload.form = unit;
+        payload.filesText = extractFilesText(unit.files);
+        payload.customInstructions = unit.customInstructions;
+      }
+
+      if (useAI) {
+        const res = await fetch("/.netlify/functions/plan", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) {
+          const text = await res.text();
+          throw new Error(text || `Request failed (${res.status})`);
+        }
+        const data = await res.json();
+        const aiHtml = (data && data.html) ? String(data.html) : "";
+        setGen({ status: "done", html: aiHtml || html });
+      } else {
+        setGen({ status: "done", html });
+      }
+    } catch (err:any) {
+      setGen({ status: "error", error: err?.message || String(err) });
+    }
+  }
+
+  function reset() {
+    if (tab==="daily") setDaily(initialDaily);
+    if (tab==="weekly") setWeekly(initialWeekly);
+    if (tab==="unit") setUnit(initialUnit);
+    setGen({ status: "idle" });
+  }
+
+  function downloadWord() {
+    const html = gen.html || (tab==="daily"?dailyToHTML(daily):tab==="weekly"?weeklyToHTML(weekly):unitToHTML(unit));
+    const filename =
+      tab === "daily" ? "Daily_Lesson_Plan.doc" :
+      tab === "weekly" ? "Weekly_Plan.doc" : "Unit_Plan.doc";
+    downloadHTMLAsDoc(filename, html);
+  }
+
+  async function copyForGoogleDocs() {
+    const html = gen.html || (tab==="daily"?dailyToHTML(daily):tab==="weekly"?weeklyToHTML(weekly):unitToHTML(unit));
+    await copyHtmlToClipboard(html);
+  }
+
+  return (
+    <div className="max-w-6xl mx-auto p-4 md:p-6">
+      <header className="mb-6">
+        <h1 className="text-2xl md:text-3xl font-bold">Teacher Planner — Daily • Weekly • Unit</h1>
+        <p className="text-sm text-gray-600">Matches your sketches: horizontal weekly charts, unit week squares, ELL supports, MTSS tiers, answer keys, and per-day attachments.</p>
+      </header>
+
+      <div className="flex gap-2 mb-4">
+        {tabs.map(t => (
+          <button
+            key={t.id}
+            onClick={()=>setTab(t.id)}
+            className={classNames(
+              "px-3 py-2 rounded-xl text-sm border",
+              tab === t.id ? "bg-indigo-600 text-white border-indigo-700" : "bg-white hover:bg-gray-50"
+            )}
+          >
+            {t.label}
+          </button>
+        ))}
+        <div className="ml-auto flex items-center gap-2">
+          <input id="useAI" type="checkbox" checked={useAI} onChange={e=>setAIForTab(e.target.checked)} />
+          <label htmlFor="useAI" className="text-sm">Use AI</label>
+        </div>
+      </div>
+
+      <div className="rounded-2xl border p-4 md:p-6 bg-white">
+        {tab === "daily" && <DailyTab value={daily} onChange={setDaily} />}
+        {tab === "weekly" && <WeeklyTab value={weekly} onChange={setWeekly} />}
+        {tab === "unit" && <UnitTab value={unit} onChange={setUnit} />}
+      </div>
+
+      <div className="mt-4 flex flex-wrap gap-2">
+        <button onClick={generate} className="rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-sm px-4 py-2 disabled:opacity-60" disabled={gen.status==="working"}>
+          {gen.status==="working" ? "Generating…" : "Generate"}
+        </button>
+        <button onClick={downloadWord} className="rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm px-4 py-2">
+          Download (.doc)
+        </button>
+        <button onClick={copyForGoogleDocs} className="rounded-xl bg-gray-800 hover:bg-gray-900 text-white text-sm px-4 py-2">
+          Copy HTML (Google Docs)
+        </button>
+        <button onClick={reset} className="rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-800 text-sm px-4 py-2">
+          Reset
+        </button>
+      </div>
+
+      <div className="mt-6 rounded-2xl border bg-white overflow-hidden">
+        <div className="px-4 py-2 bg-gray-50 border-b text-sm text-gray-700">Preview</div>
+        <div className="p-4 overflow-auto">
+          {gen.status === "error" && <div className="text-red-600 text-sm">Error: {gen.error}</div>}
+          <div dangerouslySetInnerHTML={{ __html:
+            gen.html ||
+            (tab==="daily"?dailyToHTML(daily):tab==="weekly"?weeklyToHTML(weekly):unitToHTML(unit))
+          }} />
+        </div>
+      </div>
+
+      <footer className="mt-6 text-xs text-gray-500">
+        Built from your Aug 13 sketches: keeps components separated by tab (no mixing), supports screenshots everywhere, and generates even when only topics/titles are provided.
+      </footer>
+    </div>
+  );
+}
+
+// ---------- Helpers ----------
+function escapeHtml(s: string){ return (s||"").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c] as string)); }
+function nl2br(s: string){ return escapeHtml(s||"").replace(/\n/g, "<br/>"); }
+function table(rows: Array<[string, string]>, horizontal?: boolean, title?: string){
+  const thead = horizontal
+    ? "<tr><th style='width:220px'>Field</th><th>Details</th></tr>"
+    : "<tr><th style='width:220px'>Component</th><th>Details</th></tr>";
+  const body = rows.map(r=>`<tr><td><b>${escapeHtml(r[0])}</b></td><td>${r[1]||""}</td></tr>`).join("");
+  return `<div style="margin:10px 0">${title?`<h3>${escapeHtml(title)}</h3>`:""}<table>${thead}${body}</table></div>`;
+}
+function extractFilesText(files: Uploaded[]){
+  return files.filter(f=>!!f.text).map(f=>({ name: f.name, text: f.text! }));
 }
