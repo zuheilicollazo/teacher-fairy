@@ -33,8 +33,8 @@ export default async (event: Event) => {
 
     const fileSnippets =
       (filesText || [])
-        .filter(f => f?.text?.trim())
-        .map(f => `\n[${f.name}]\n${(f.text || "").slice(0, 5000)}`)
+        .filter((f:any) => f?.text?.trim())
+        .map((f:any) => `\n[${f.name}]\n${(f.text || "").slice(0, 5000)}`)
         .join("\n\n") || "(no file text)";
 
     const system = `You are an instructional designer for K–12. Output MUST be a SINGLE HTML SNIPPET ONLY (no <html> or <body>), starting with <h1>.
